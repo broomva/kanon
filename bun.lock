@@ -28,6 +28,13 @@
         "fast-check": "^4.5.0",
       },
     },
+    "packages/store": {
+      "name": "@kanon/store",
+      "version": "0.1.0",
+      "dependencies": {
+        "@kanon/core": "workspace:*",
+      },
+    },
     "tools/linear-import": {
       "name": "@kanon/linear-import",
       "version": "0.1.0",
@@ -63,6 +70,8 @@
     "@kanon/core": ["@kanon/core@workspace:packages/core"],
 
     "@kanon/linear-import": ["@kanon/linear-import@workspace:tools/linear-import"],
+
+    "@kanon/store": ["@kanon/store@workspace:packages/store"],
 
     "@linear/sdk": ["@linear/sdk@88.0.0", "", { "dependencies": { "@graphql-typed-document-node/core": "^3.2.0" } }, "sha512-5m3bqEU7MmQwE+BUB8Z0UENnIiyqM0g4Tv0M7wm35qFAj3zCdvbX95102YcfkvwlRiH0etbKRD05JKQvzOgPpg=="],
 
