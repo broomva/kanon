@@ -12,18 +12,30 @@
  *   carries an updatedAt watermark (issues; tracked as `linearUpdatedAt` in
  *   event data) that differs from the map's, in which case exactly ONE update
  *   event is emitted. Update events carry the full current field set: the
- *   IdMap intentionally holds only {modelId, updatedAt}, so a minimal diff is
- *   not computable — and Kanon's per-field last-write-wins merge makes a
- *   full-set update semantically equivalent to one.
+ *   IdMap intentionally holds only {modelId, updatedAt, archived}, so a
+ *   minimal diff is not computable — and Kanon's per-field last-write-wins
+ *   merge makes a full-set update semantically equivalent to one.
  * - Issue relations carry no Linear id of their own, so a stable synthetic key
  *   `rel:<issueLinearId>:<type>:<relatedLinearId>` is written to data.linearId
  *   and re-runs dedupe through the same IdMap mechanism.
  *
- * Archived issues: the first import emits the create (with `archived: true` in
- * data for grep-ability) followed by an explicit `archive` op event, so
- * projections handle archival uniformly. When an already-imported issue
- * changes, the archived flag rides the single update event's data — no second
- * archive event is emitted.
+ * Archival is an EXPLICIT op, never a data flag: the first import of an
+ * archived issue emits create followed by an `archive` op event; when a
+ * re-imported issue's archival state transitions, the (single) update event is
+ * followed by an `archive`/`unarchive` op event — matching core's __archived
+ * register semantics. buildIdMap folds those ops back into the IdMap.
+ *
+ * Timestamps are normalized at emission: any parseable Linear timestamp
+ * (offsets like +03:00, locale-ish strings) becomes canonical UTC ISO-8601
+ * before it reaches an event, so segment routing (segmentName) and watermark
+ * comparison always operate on one representation. Event ts is the entity's
+ * Linear updatedAt (fallback createdAt, fallback now); the event id still
+ * carries import-time ordering.
+ *
+ * Unresolvable cross-references (a state/assignee/project/... linearId with no
+ * modelId in the map) are DROPPED from event data but observable: each one is
+ * recorded in summary.droppedRefs / summary.droppedByModel so callers can warn.
+ * Repairing them on a later run where the target resolves is a follow-up.
  *
  * Ordering: events reference only modelIds introduced earlier in emission
  * order (teams → workflow_states → labels → users → projects → milestones →
@@ -33,8 +45,14 @@
  * after top-level comments. Event ids use the in-process monotonic ulid(), so
  * ids strictly increase in emission order.
  *
- * Event ts is the entity's Linear updatedAt (fallback createdAt, fallback
- * now); the event id still carries import-time ordering.
+ * Operational limits (see also tools/linear-import/README.md):
+ * - Comments have no updatedAt watermark in the export — edited comment
+ *   bodies do NOT re-sync after first import.
+ * - Deletions and un-relations never propagate: the importer mirrors a
+ *   snapshot forward; it only creates, updates, archives, unarchives.
+ * - Because updates carry the full field set, do NOT run the importer against
+ *   a repo receiving local writes to imported entities — a Linear-side change
+ *   would clobber local edits field-by-field. Mirror-phase tool.
  */
 
 import {
@@ -47,8 +65,8 @@ import {
 } from "@kanon/core";
 import type { LinearExport } from "./types";
 
-/** linearId → existing entity key + last-seen Linear updatedAt watermark. */
-export type IdMap = Map<string, { modelId: string; updatedAt?: string }>;
+/** linearId → existing entity key + Linear updatedAt watermark + archival state. */
+export type IdMap = Map<string, { modelId: string; updatedAt?: string; archived?: boolean }>;
 
 export const IMPORT_ACTOR: EventActor = {
   type: "app",
@@ -62,11 +80,25 @@ export interface ModelCounts {
   skipped: number;
 }
 
+/** One unresolvable cross-reference, dropped from event data but reported. */
+export interface DroppedRef {
+  /** Model of the entity whose reference could not be resolved. */
+  model: string;
+  /** linearId of the referring entity. */
+  linearId: string;
+  /** Data field the reference would have populated. */
+  field: string;
+  /** The Linear id that had no modelId in the map. */
+  ref: string;
+}
+
 export interface TransformSummary {
   created: number;
   updated: number;
   skipped: number;
   byModel: Record<string, ModelCounts>;
+  droppedRefs: DroppedRef[];
+  droppedByModel: Record<string, number>;
 }
 
 export interface TransformResult {
@@ -88,6 +120,32 @@ export function relationKey(issueLinearId: string, type: string, relatedLinearId
   return `rel:${issueLinearId}:${type}:${relatedLinearId}`;
 }
 
+/**
+ * Normalize any parseable timestamp to canonical UTC ISO-8601. Unparseable or
+ * absent values return undefined so callers fall through their ts chain.
+ */
+export function normalizeTs(value: string | undefined): string | undefined {
+  if (value === undefined || value.length === 0) return undefined;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? undefined : new Date(parsed).toISOString();
+}
+
+/**
+ * Highest imported issue number per team KEY — used to seed the data repo's
+ * meta.json displayCounters so locally minted identifiers never collide with
+ * imported history (e.g. never mint BRO-1 over an imported BRO-1646).
+ */
+export function displayCounters(exp: LinearExport): Record<string, number> {
+  const keyByTeam = new Map(exp.teams.map((team) => [team.linearId, team.key]));
+  const counters: Record<string, number> = {};
+  for (const issue of exp.issues) {
+    const key = keyByTeam.get(issue.teamLinearId);
+    if (key === undefined || typeof issue.number !== "number") continue;
+    counters[key] = Math.max(counters[key] ?? 0, issue.number);
+  }
+  return counters;
+}
+
 interface ParentFixup {
   childModelId: string;
   childLinearId: string;
@@ -98,7 +156,14 @@ interface ParentFixup {
 export function transform(exp: LinearExport, existing: IdMap): TransformResult {
   const map: IdMap = new Map(existing);
   const events: KanonEvent[] = [];
-  const summary: TransformSummary = { created: 0, updated: 0, skipped: 0, byModel: {} };
+  const summary: TransformSummary = {
+    created: 0,
+    updated: 0,
+    skipped: 0,
+    byModel: {},
+    droppedRefs: [],
+    droppedByModel: {},
+  };
 
   const count = (model: Model, kind: keyof ModelCounts): void => {
     summary[kind] += 1;
@@ -109,6 +174,32 @@ export function transform(exp: LinearExport, existing: IdMap): TransformResult {
 
   const idFor = (linearId: string | undefined): string | undefined =>
     linearId === undefined ? undefined : map.get(linearId)?.modelId;
+
+  /** idFor + observability: an unresolvable (defined) ref is recorded, then dropped. */
+  const resolve = (
+    model: Model,
+    entityLinearId: string,
+    field: string,
+    ref: string | undefined,
+  ): string | undefined => {
+    if (ref === undefined) return undefined;
+    const modelId = map.get(ref)?.modelId;
+    if (modelId === undefined) {
+      summary.droppedRefs.push({ model, linearId: entityLinearId, field, ref });
+      summary.droppedByModel[model] = (summary.droppedByModel[model] ?? 0) + 1;
+    }
+    return modelId;
+  };
+
+  const resolveAll = (
+    model: Model,
+    entityLinearId: string,
+    field: string,
+    refs: string[],
+  ): string[] =>
+    refs
+      .map((ref) => resolve(model, entityLinearId, field, ref))
+      .filter((id): id is string => id !== undefined);
 
   const emit = (
     op: Op,
@@ -134,12 +225,13 @@ export function transform(exp: LinearExport, existing: IdMap): TransformResult {
    * Create-or-skip for entities without an updatedAt watermark in the export
    * (teams, states, labels, users, projects, milestones, initiatives): change
    * detection is scoped to issues, so a known linearId is always a skip.
-   * Returns the entity's modelId either way.
+   * Returns the entity's modelId either way. `data` is lazy so skipped
+   * entities never record dropped refs.
    */
   const upsert = (
     model: Model,
     linearId: string,
-    data: Record<string, unknown>,
+    data: () => Record<string, unknown>,
     ts?: string,
   ): string => {
     const entry = map.get(linearId);
@@ -149,74 +241,72 @@ export function transform(exp: LinearExport, existing: IdMap): TransformResult {
     }
     const modelId = ulid();
     map.set(linearId, { modelId });
-    emit("create", model, modelId, compact({ ...data, linearId }), ts);
+    emit("create", model, modelId, compact({ ...data(), linearId }), ts);
     count(model, "created");
     return modelId;
   };
 
   // -- teams + workflow states ----------------------------------------------
   for (const team of exp.teams) {
-    const teamId = upsert("team", team.linearId, { key: team.key, name: team.name });
+    const teamId = upsert("team", team.linearId, () => ({ key: team.key, name: team.name }));
     for (const state of team.states) {
-      upsert("workflow_state", state.linearId, {
+      upsert("workflow_state", state.linearId, () => ({
         teamId,
         name: state.name,
         type: state.type,
         color: state.color,
         position: state.position,
-      });
+      }));
     }
   }
 
   // -- labels ----------------------------------------------------------------
   for (const label of exp.labels) {
-    upsert("label", label.linearId, {
-      teamId: idFor(label.teamLinearId),
+    upsert("label", label.linearId, () => ({
+      teamId: resolve("label", label.linearId, "teamId", label.teamLinearId),
       name: label.name,
       color: label.color,
-    });
+    }));
   }
 
   // -- users → actors ---------------------------------------------------------
   for (const user of exp.users) {
-    upsert("actor", user.linearId, {
+    upsert("actor", user.linearId, () => ({
       name: user.name,
       displayName: user.displayName,
       email: user.email,
       actorType: user.isAgent === true ? "agent" : "human",
-    });
+    }));
   }
 
   // -- projects ----------------------------------------------------------------
   for (const project of exp.projects) {
-    upsert("project", project.linearId, {
+    upsert("project", project.linearId, () => ({
       name: project.name,
       description: project.description,
       state: project.state,
-      leadId: idFor(project.leadLinearId),
+      leadId: resolve("project", project.linearId, "leadId", project.leadLinearId),
       targetDate: project.targetDate,
-      teamIds: project.teamLinearIds
-        .map((id) => idFor(id))
-        .filter((id): id is string => id !== undefined),
-    });
+      teamIds: resolveAll("project", project.linearId, "teamIds", project.teamLinearIds),
+    }));
   }
 
   // -- milestones ---------------------------------------------------------------
   for (const milestone of exp.milestones) {
-    upsert("milestone", milestone.linearId, {
-      projectId: idFor(milestone.projectLinearId),
+    upsert("milestone", milestone.linearId, () => ({
+      projectId: resolve("milestone", milestone.linearId, "projectId", milestone.projectLinearId),
       name: milestone.name,
       targetDate: milestone.targetDate,
-    });
+    }));
   }
 
   // -- initiatives ----------------------------------------------------------------
   for (const initiative of exp.initiatives) {
-    upsert("initiative", initiative.linearId, {
+    upsert("initiative", initiative.linearId, () => ({
       name: initiative.name,
       description: initiative.description,
       targetDate: initiative.targetDate,
-    });
+    }));
   }
 
   // -- issues -----------------------------------------------------------------
@@ -227,53 +317,69 @@ export function transform(exp: LinearExport, existing: IdMap): TransformResult {
   const parentFixups: ParentFixup[] = [];
 
   for (const issue of exp.issues) {
+    const updatedAt = normalizeTs(issue.updatedAt);
     const entry = map.get(issue.linearId);
-    if (entry !== undefined && entry.updatedAt === issue.updatedAt) {
+    if (entry !== undefined && entry.updatedAt === updatedAt) {
       count("issue", "skipped");
       continue;
     }
 
-    const ts = issue.updatedAt || issue.createdAt || undefined;
+    const ts = updatedAt ?? normalizeTs(issue.createdAt);
+    const archived = issue.archivedAt !== undefined;
+    const archiveTs = normalizeTs(issue.archivedAt) ?? ts;
+    // Parent refs resolve via plain idFor: an in-export forward reference is
+    // NOT a dropped ref — the fixup pass patches or records it below.
     const parentLinearId = issue.parentLinearId;
     const parentId = idFor(parentLinearId);
 
     const data = compact({
-      teamId: idFor(issue.teamLinearId),
+      teamId: resolve("issue", issue.linearId, "teamId", issue.teamLinearId),
       number: issue.number,
       identifier: issue.identifier,
       title: issue.title,
       description: issue.description,
       priority: issue.priority,
       estimate: issue.estimate,
-      stateId: idFor(issue.stateLinearId),
-      assigneeId: idFor(issue.assigneeLinearId),
+      stateId: resolve("issue", issue.linearId, "stateId", issue.stateLinearId),
+      assigneeId: resolve("issue", issue.linearId, "assigneeId", issue.assigneeLinearId),
       parentId,
-      projectId: idFor(issue.projectLinearId),
-      milestoneId: idFor(issue.milestoneLinearId),
-      labelIds: issue.labelLinearIds
-        .map((id) => idFor(id))
-        .filter((id): id is string => id !== undefined),
+      projectId: resolve("issue", issue.linearId, "projectId", issue.projectLinearId),
+      milestoneId: resolve("issue", issue.linearId, "milestoneId", issue.milestoneLinearId),
+      labelIds: resolveAll("issue", issue.linearId, "labelIds", issue.labelLinearIds),
       linearId: issue.linearId,
-      linearCreatedAt: issue.createdAt,
-      linearUpdatedAt: issue.updatedAt,
-      archived: issue.archivedAt !== undefined,
+      linearCreatedAt: normalizeTs(issue.createdAt),
+      linearUpdatedAt: updatedAt,
     });
 
     let modelId: string;
     if (entry !== undefined) {
-      // Known issue whose Linear updatedAt moved: exactly one update event.
+      // Known issue whose Linear updatedAt moved: exactly one update event,
+      // plus an explicit archive/unarchive op if the archival state flipped.
       modelId = entry.modelId;
       emit("update", "issue", modelId, data, ts);
       count("issue", "updated");
+      if (archived !== (entry.archived === true)) {
+        emit(
+          archived ? "archive" : "unarchive",
+          "issue",
+          modelId,
+          { linearId: issue.linearId },
+          archived ? archiveTs : ts,
+        );
+      }
     } else {
       modelId = ulid();
       emit("create", "issue", modelId, data, ts);
       count("issue", "created");
-      if (issue.archivedAt !== undefined) {
-        emit("archive", "issue", modelId, { linearId: issue.linearId }, issue.archivedAt);
+      if (archived) {
+        emit("archive", "issue", modelId, { linearId: issue.linearId }, archiveTs);
       }
     }
-    map.set(issue.linearId, { modelId, updatedAt: issue.updatedAt });
+    map.set(issue.linearId, {
+      modelId,
+      ...(updatedAt === undefined ? {} : { updatedAt }),
+      ...(archived ? { archived: true } : {}),
+    });
 
     if (parentLinearId !== undefined && parentId === undefined) {
       parentFixups.push({
@@ -286,8 +392,9 @@ export function transform(exp: LinearExport, existing: IdMap): TransformResult {
   }
 
   for (const fixup of parentFixups) {
-    const parentId = idFor(fixup.parentLinearId);
-    if (parentId === undefined) continue; // parent not in export or log — leave unset
+    // Resolvable now → patch; still unresolvable → observable dropped ref.
+    const parentId = resolve("issue", fixup.childLinearId, "parentId", fixup.parentLinearId);
+    if (parentId === undefined) continue;
     emit(
       "update",
       "issue",
@@ -305,8 +412,13 @@ export function transform(exp: LinearExport, existing: IdMap): TransformResult {
         count("issue_relation", "skipped");
         continue;
       }
-      const issueId = idFor(issue.linearId);
-      const relatedIssueId = idFor(relation.relatedIssueLinearId);
+      const issueId = resolve("issue_relation", key, "issueId", issue.linearId);
+      const relatedIssueId = resolve(
+        "issue_relation",
+        key,
+        "relatedIssueId",
+        relation.relatedIssueLinearId,
+      );
       if (issueId === undefined || relatedIssueId === undefined) {
         count("issue_relation", "skipped"); // dangling reference — nothing to link
         continue;
@@ -318,7 +430,7 @@ export function transform(exp: LinearExport, existing: IdMap): TransformResult {
         "issue_relation",
         modelId,
         { type: relation.type, issueId, relatedIssueId, linearId: key },
-        issue.updatedAt || issue.createdAt || undefined,
+        normalizeTs(issue.updatedAt) ?? normalizeTs(issue.createdAt),
       );
       count("issue_relation", "created");
     }
@@ -332,7 +444,7 @@ export function transform(exp: LinearExport, existing: IdMap): TransformResult {
       count("comment", "skipped");
       continue;
     }
-    const issueId = idFor(comment.issueLinearId);
+    const issueId = resolve("comment", comment.linearId, "issueId", comment.issueLinearId);
     if (issueId === undefined) {
       count("comment", "skipped"); // comment on an issue we never saw
       continue;
@@ -346,12 +458,12 @@ export function transform(exp: LinearExport, existing: IdMap): TransformResult {
       compact({
         issueId,
         body: comment.body,
-        actorId: idFor(comment.userLinearId),
-        parentId: idFor(comment.parentLinearId),
+        actorId: resolve("comment", comment.linearId, "actorId", comment.userLinearId),
+        parentId: resolve("comment", comment.linearId, "parentId", comment.parentLinearId),
         linearId: comment.linearId,
-        linearCreatedAt: comment.createdAt,
+        linearCreatedAt: normalizeTs(comment.createdAt),
       }),
-      comment.createdAt,
+      normalizeTs(comment.createdAt),
     );
     count("comment", "created");
   }

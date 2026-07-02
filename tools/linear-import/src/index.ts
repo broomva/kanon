@@ -7,14 +7,19 @@
  * carries a different slug the import rewrites events to the repo's slug and
  * says so. Re-runs are idempotent: entities already in the log (matched by
  * data.linearId) are skipped; issues whose Linear updatedAt moved get exactly
- * one update event.
+ * one update event. After a real (non-dry-run) import the repo's meta.json
+ * displayCounters are seeded with the highest imported issue number per team
+ * key, so locally minted identifiers continue above imported history.
+ *
+ * Operational limits are documented in tools/linear-import/README.md.
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { appendEvents, buildIdMap, loadEvents } from "./data-repo";
+import { CliError, normalizeExport, parseArgs } from "./cli";
+import { appendEvents, buildIdMap, loadEvents, seedDisplayCounters } from "./data-repo";
 import { fetchLinearExport } from "./fetch";
-import { transform } from "./transform";
+import { displayCounters, transform } from "./transform";
 import type { LinearExport } from "./types";
 
 const USAGE = `linear-import — import a Linear workspace into a Kanon data repo
@@ -29,56 +34,12 @@ Modes:
 
 Options:
   --save-export <f>  write the (live or fixture) export snapshot to <f>
-  --dry-run          transform and report, but append nothing
+  --dry-run          transform and report, but write nothing
   --json             machine-readable summary on stdout`;
-
-const BOOLEAN_FLAGS = new Set(["live", "dry-run", "json", "help"]);
-
-function parseArgs(argv: string[]): Map<string, string | boolean> {
-  const flags = new Map<string, string | boolean>();
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === undefined || !arg.startsWith("--")) continue;
-    const name = arg.slice(2);
-    const next = argv[i + 1];
-    if (!BOOLEAN_FLAGS.has(name) && next !== undefined && !next.startsWith("--")) {
-      flags.set(name, next);
-      i++;
-    } else {
-      flags.set(name, true);
-    }
-  }
-  return flags;
-}
 
 function fail(message: string): never {
   console.error(`error: ${message}`);
   process.exit(1);
-}
-
-function normalizeExport(value: unknown): LinearExport {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    fail("export must be a JSON object");
-  }
-  const record = value as Record<string, unknown>;
-  if (typeof record.workspace !== "string") {
-    fail("export.workspace must be a string");
-  }
-  const list = (key: string): unknown[] => {
-    const raw = record[key];
-    return Array.isArray(raw) ? raw : [];
-  };
-  return {
-    workspace: record.workspace,
-    teams: list("teams"),
-    labels: list("labels"),
-    users: list("users"),
-    projects: list("projects"),
-    milestones: list("milestones"),
-    initiatives: list("initiatives"),
-    issues: list("issues"),
-    comments: list("comments"),
-  } as LinearExport;
 }
 
 function readExportFile(path: string): LinearExport {
@@ -88,11 +49,13 @@ function readExportFile(path: string): LinearExport {
   } catch (error) {
     fail(`cannot read fixture ${path}: ${error instanceof Error ? error.message : error}`);
   }
+  let parsed: unknown;
   try {
-    return normalizeExport(JSON.parse(raw));
+    parsed = JSON.parse(raw);
   } catch (error) {
     fail(`fixture ${path} is not valid JSON: ${error instanceof Error ? error.message : error}`);
   }
+  return normalizeExport(parsed);
 }
 
 function readMetaWorkspace(dir: string): string {
@@ -109,7 +72,14 @@ function readMetaWorkspace(dir: string): string {
   return workspace;
 }
 
-const flags = parseArgs(process.argv.slice(2));
+let flags: Map<string, string | boolean>;
+try {
+  flags = parseArgs(process.argv.slice(2));
+} catch (error) {
+  console.error(USAGE);
+  console.error("");
+  fail(error instanceof Error ? error.message : String(error));
+}
 
 if (flags.get("help") === true) {
   console.log(USAGE);
@@ -119,6 +89,7 @@ if (flags.get("help") === true) {
 const dataRepoArg = flags.get("data-repo");
 if (typeof dataRepoArg !== "string") {
   console.error(USAGE);
+  console.error("");
   fail("--data-repo <dir> is required");
 }
 const dataRepo = resolve(dataRepoArg);
@@ -130,10 +101,14 @@ if (live === (typeof fixtureArg === "string")) {
 }
 
 let exportData: LinearExport;
-if (typeof fixtureArg === "string") {
-  exportData = readExportFile(resolve(fixtureArg));
-} else {
-  exportData = await fetchLinearExport();
+try {
+  exportData =
+    typeof fixtureArg === "string"
+      ? readExportFile(resolve(fixtureArg))
+      : normalizeExport(await fetchLinearExport());
+} catch (error) {
+  if (error instanceof CliError) fail(error.message);
+  throw error;
 }
 
 const saveExport = flags.get("save-export");
@@ -156,8 +131,16 @@ const idMap = buildIdMap(existingEvents);
 const { events, summary } = transform(exportData, idMap);
 
 const dryRun = flags.get("dry-run") === true;
-if (!dryRun && events.length > 0) {
-  appendEvents(dataRepo, events);
+if (!dryRun) {
+  if (events.length > 0) appendEvents(dataRepo, events);
+  seedDisplayCounters(dataRepo, displayCounters(exportData));
+}
+
+if (summary.droppedRefs.length > 0) {
+  console.error(`warning: ${summary.droppedRefs.length} unresolvable cross-reference(s) dropped:`);
+  for (const drop of summary.droppedRefs) {
+    console.error(`  ${drop.model} ${drop.linearId} .${drop.field} → ${drop.ref}`);
+  }
 }
 
 if (flags.get("json") === true) {
@@ -185,5 +168,8 @@ if (flags.get("json") === true) {
       .filter((kind) => counts[kind] > 0)
       .map((kind) => `${counts[kind]} ${kind}`);
     console.log(`  ${model}: ${parts.join(", ")}`);
+  }
+  if (summary.droppedRefs.length > 0) {
+    console.log(`  dropped refs: ${summary.droppedRefs.length} (see warning above)`);
   }
 }

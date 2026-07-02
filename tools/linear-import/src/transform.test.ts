@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { type KanonEvent, validateEvent } from "@kanon/core";
+import { type KanonEvent, segmentName, validateEvent } from "@kanon/core";
 import fixtureJson from "../fixtures/export.small.json";
 import { buildIdMap } from "./data-repo";
-import { relationKey, transform } from "./transform";
+import { displayCounters, normalizeTs, relationKey, transform } from "./transform";
 import type { LinearExport, LinearIssueExport } from "./types";
 
 const fixture = fixtureJson as unknown as LinearExport;
@@ -37,10 +37,12 @@ describe("transform — fresh import", () => {
     }
   });
 
-  test("summary counts every entity once", () => {
+  test("summary counts every entity once and drops nothing", () => {
     expect(summary.created).toBe(21);
     expect(summary.updated).toBe(0);
     expect(summary.skipped).toBe(0);
+    expect(summary.droppedRefs).toEqual([]);
+    expect(summary.droppedByModel).toEqual({});
     expect(summary.byModel.team?.created).toBe(1);
     expect(summary.byModel.workflow_state?.created).toBe(7);
     expect(summary.byModel.label?.created).toBe(2);
@@ -130,9 +132,9 @@ describe("transform — fresh import", () => {
     expect(events.filter((e) => e.op === "update")).toEqual([]);
   });
 
-  test("archived issue: create (archived: true) then archive event", () => {
+  test("archived issue: create (no data flag) then explicit archive op", () => {
     const create = findCreate(events, "lin-issue-1643");
-    expect(create.data.archived).toBe(true);
+    expect("archived" in create.data).toBe(false); // explicit ops are the one mechanism
     const archive = events.find((e) => e.op === "archive");
     if (archive === undefined) throw new Error("no archive event");
     expect(archive.model).toBe("issue");
@@ -141,7 +143,7 @@ describe("transform — fresh import", () => {
     expect(archive.ts).toBe("2026-06-26T09:00:00.000Z");
     expect(events.indexOf(archive)).toBe(events.indexOf(create) + 1);
     const active = findCreate(events, "lin-issue-1644");
-    expect(active.data.archived).toBe(false);
+    expect("archived" in active.data).toBe(false);
   });
 
   test("relations become issue_relation relate events with a synthetic linearId", () => {
@@ -174,6 +176,7 @@ describe("transform — idempotency", () => {
     expect(second.summary.created).toBe(0);
     expect(second.summary.updated).toBe(0);
     expect(second.summary.skipped).toBe(21);
+    expect(second.summary.droppedRefs).toEqual([]);
   });
 
   test("changed updatedAt + title yields exactly one update event", () => {
@@ -210,6 +213,142 @@ describe("transform — idempotency", () => {
     if (entry === undefined) throw new Error("missing map entry");
     expect(entry.modelId).toBe(findCreate(first.events, "lin-issue-1644").modelId);
     expect(entry.updatedAt).toBe("2026-06-27T16:30:00.000Z");
+    expect(entry.archived).toBeUndefined();
+    expect(map.get("lin-issue-1643")?.archived).toBe(true);
+  });
+});
+
+describe("transform — archival transitions", () => {
+  test("unarchive in Linear emits update + explicit unarchive op", () => {
+    const first = transform(freshExport(), new Map());
+    const map = buildIdMap(first.events);
+
+    const changed = freshExport();
+    const issue = findIssue(changed, "lin-issue-1643");
+    delete issue.archivedAt; // restored in Linear
+    issue.updatedAt = "2026-06-29T10:00:00.000Z";
+
+    const second = transform(changed, map);
+    expect(second.events.length).toBe(2);
+    const [update, unarchive] = second.events;
+    if (update === undefined || unarchive === undefined) throw new Error("unreachable");
+    expect(update.op).toBe("update");
+    expect(unarchive.op).toBe("unarchive");
+    expect(unarchive.modelId).toBe(update.modelId);
+    expect(unarchive.data.linearId).toBe("lin-issue-1643");
+
+    // the log now folds back to archived: false — and a re-run is a no-op
+    const map3 = buildIdMap([...first.events, ...second.events]);
+    expect(map3.get("lin-issue-1643")?.archived).toBe(false);
+    expect(transform(changed, map3).events).toEqual([]);
+  });
+
+  test("archive in Linear emits update + explicit archive op (no data flag)", () => {
+    const first = transform(freshExport(), new Map());
+    const map = buildIdMap(first.events);
+
+    const changed = freshExport();
+    const issue = findIssue(changed, "lin-issue-1645");
+    issue.updatedAt = "2026-07-01T12:00:00.000Z";
+    issue.archivedAt = "2026-07-01T12:00:00.000Z";
+
+    const second = transform(changed, map);
+    expect(second.events.length).toBe(2);
+    const [update, archive] = second.events;
+    if (update === undefined || archive === undefined) throw new Error("unreachable");
+    expect(update.op).toBe("update");
+    expect("archived" in update.data).toBe(false);
+    expect(archive.op).toBe("archive");
+    expect(archive.modelId).toBe(update.modelId);
+
+    // staying archived on the next watermark move emits NO second archive op
+    const map3 = buildIdMap([...first.events, ...second.events]);
+    const changedAgain = structuredClone(changed);
+    findIssue(changedAgain, "lin-issue-1645").updatedAt = "2026-07-02T08:00:00.000Z";
+    const third = transform(changedAgain, map3);
+    expect(third.events.length).toBe(1);
+    expect(third.events[0]?.op).toBe("update");
+  });
+});
+
+describe("transform — timestamp normalization", () => {
+  test("normalizeTs canonicalizes offsets and locale-ish strings to UTC ISO", () => {
+    expect(normalizeTs("2026-06-27T19:30:00.000+03:00")).toBe("2026-06-27T16:30:00.000Z");
+    expect(normalizeTs("2026-06-30T23:30:00.000-05:00")).toBe("2026-07-01T04:30:00.000Z");
+    expect(normalizeTs(undefined)).toBeUndefined();
+    expect(normalizeTs("not a date")).toBeUndefined();
+  });
+
+  test("event ts and watermark are normalized so segments route by UTC month", () => {
+    const exp = freshExport();
+    const issue = findIssue(exp, "lin-issue-1645");
+    // +03:00 offset: local July 1st but UTC June 30th — must route to 2026-06
+    issue.updatedAt = "2026-07-01T02:30:00.000+03:00";
+
+    const { events } = transform(exp, new Map());
+    const create = findCreate(events, "lin-issue-1645");
+    expect(create.ts).toBe("2026-06-30T23:30:00.000Z");
+    expect(create.data.linearUpdatedAt).toBe("2026-06-30T23:30:00.000Z");
+    expect(segmentName(create.ts)).toBe("2026-06.jsonl");
+    for (const event of events) {
+      expect(segmentName(event.ts)).toMatch(/^\d{4}-\d{2}\.jsonl$/);
+    }
+
+    // watermark comparison is normalized-to-normalized: re-run is a no-op
+    // even though the export still carries the offset representation
+    const second = transform(structuredClone(exp), buildIdMap(events));
+    expect(second.events).toEqual([]);
+  });
+});
+
+describe("transform — dropped cross-references", () => {
+  test("unresolvable refs are dropped from data but recorded in the summary", () => {
+    const exp = freshExport();
+    const issue = findIssue(exp, "lin-issue-1645");
+    issue.stateLinearId = "lin-state-missing";
+    issue.relations.push({ type: "blocks", relatedIssueLinearId: "lin-issue-elsewhere" });
+
+    const { events, summary } = transform(exp, new Map());
+    const create = findCreate(events, "lin-issue-1645");
+    expect("stateId" in create.data).toBe(false);
+    expect(events.filter((e) => e.model === "issue_relation").length).toBe(1); // dangling one dropped
+
+    expect(summary.droppedRefs).toEqual([
+      {
+        model: "issue",
+        linearId: "lin-issue-1645",
+        field: "stateId",
+        ref: "lin-state-missing",
+      },
+      {
+        model: "issue_relation",
+        linearId: relationKey("lin-issue-1645", "blocks", "lin-issue-elsewhere"),
+        field: "relatedIssueId",
+        ref: "lin-issue-elsewhere",
+      },
+    ]);
+    expect(summary.droppedByModel).toEqual({ issue: 1, issue_relation: 1 });
+  });
+
+  test("a parent missing from the export is a dropped ref, not a silent omission", () => {
+    const exp = freshExport();
+    findIssue(exp, "lin-issue-1646").parentLinearId = "lin-issue-gone";
+
+    const { events, summary } = transform(exp, new Map());
+    expect(findCreate(events, "lin-issue-1646").data.parentId).toBeUndefined();
+    expect(events.filter((e) => e.op === "update")).toEqual([]); // no fixup emitted
+    expect(summary.droppedRefs).toEqual([
+      { model: "issue", linearId: "lin-issue-1646", field: "parentId", ref: "lin-issue-gone" },
+    ]);
+  });
+
+  test("skipped entities never re-record dropped refs on re-runs", () => {
+    const exp = freshExport();
+    findIssue(exp, "lin-issue-1645").stateLinearId = "lin-state-missing";
+    const first = transform(exp, new Map());
+    expect(first.summary.droppedRefs.length).toBe(1);
+    const second = transform(structuredClone(exp), buildIdMap(first.events));
+    expect(second.summary.droppedRefs).toEqual([]);
   });
 });
 
@@ -258,7 +397,7 @@ describe("transform — forward-referenced parent", () => {
   };
 
   test("child is created without parentId, then patched by one update event", () => {
-    const { events } = transform(structuredClone(miniExport), new Map());
+    const { events, summary } = transform(structuredClone(miniExport), new Map());
     const child = findCreate(events, "lin-issue-child");
     const parent = findCreate(events, "lin-issue-parent");
     expect(child.data.parentId).toBeUndefined();
@@ -272,6 +411,7 @@ describe("transform — forward-referenced parent", () => {
     expect(fixup.data.linearId).toBe("lin-issue-child");
     // the patch lands after both creates — no forward modelId references in the log
     expect(events.indexOf(fixup)).toBeGreaterThan(events.indexOf(parent));
+    expect(summary.droppedRefs).toEqual([]); // in-export forward ref is not a drop
     for (const event of events) {
       expect(validateEvent(event).ok).toBe(true);
     }
@@ -281,5 +421,17 @@ describe("transform — forward-referenced parent", () => {
     const first = transform(structuredClone(miniExport), new Map());
     const second = transform(structuredClone(miniExport), buildIdMap(first.events));
     expect(second.events).toEqual([]);
+  });
+});
+
+describe("displayCounters", () => {
+  test("takes the max imported issue number per team key", () => {
+    expect(displayCounters(freshExport())).toEqual({ BRO: 1646 });
+  });
+
+  test("ignores issues whose team is not in the export", () => {
+    const exp = freshExport();
+    findIssue(exp, "lin-issue-1646").teamLinearId = "lin-team-unknown";
+    expect(displayCounters(exp)).toEqual({ BRO: 1645 });
   });
 });

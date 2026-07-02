@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createEvent, segmentName } from "@kanon/core";
 import fixtureJson from "../fixtures/export.small.json";
-import { appendEvents, buildIdMap, loadEvents } from "./data-repo";
+import { appendEvents, buildIdMap, loadEvents, seedDisplayCounters } from "./data-repo";
 import { IMPORT_ACTOR, transform } from "./transform";
 import type { LinearExport } from "./types";
 
@@ -38,6 +38,7 @@ describe("data-repo round-trip", () => {
 
     const map = buildIdMap(loaded);
     expect(map.size).toBe(21); // every entity incl. the synthetic relation key
+    expect(map.get("lin-issue-1643")?.archived).toBe(true); // archive op folded back
 
     const second = transform(structuredClone(fixture), map);
     expect(second.events).toEqual([]);
@@ -102,17 +103,33 @@ describe("buildIdMap", () => {
       modelId: create.modelId,
       data: { linearId: "lin-x", linearUpdatedAt: "2026-06-09T00:00:00.000Z" },
     });
+    const unarchive = createEvent({
+      ...base,
+      op: "unarchive",
+      modelId: create.modelId,
+      data: { linearId: "lin-x" },
+    });
 
     const afterArchive = buildIdMap([create, archive]);
     expect(afterArchive.get("lin-x")).toEqual({
       modelId: create.modelId,
       updatedAt: "2026-06-01T00:00:00.000Z",
+      archived: true,
     });
 
     const afterUpdate = buildIdMap([create, archive, update]);
     expect(afterUpdate.get("lin-x")).toEqual({
       modelId: create.modelId,
       updatedAt: "2026-06-09T00:00:00.000Z",
+      archived: true,
+    });
+
+    // the last archive/unarchive op wins as the archival state
+    const afterUnarchive = buildIdMap([create, archive, update, unarchive]);
+    expect(afterUnarchive.get("lin-x")).toEqual({
+      modelId: create.modelId,
+      updatedAt: "2026-06-09T00:00:00.000Z",
+      archived: false,
     });
   });
 
@@ -125,5 +142,41 @@ describe("buildIdMap", () => {
       data: { slug: "broomva" },
     });
     expect(buildIdMap([event]).size).toBe(0);
+  });
+});
+
+describe("seedDisplayCounters", () => {
+  function writeMeta(dir: string, meta: Record<string, unknown>): void {
+    writeFileSync(join(dir, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`);
+  }
+
+  function readMeta(dir: string): Record<string, unknown> {
+    return JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")) as Record<string, unknown>;
+  }
+
+  test("seeds counters into a fresh meta.json", () => {
+    const dir = tempRepo();
+    writeMeta(dir, { workspace: "broomva", schemaVersion: 1, displayCounters: {} });
+    const merged = seedDisplayCounters(dir, { BRO: 1646 });
+    expect(merged).toEqual({ BRO: 1646 });
+    expect(readMeta(dir).displayCounters).toEqual({ BRO: 1646 });
+  });
+
+  test("is monotonic: never lowers an existing counter, merges new keys", () => {
+    const dir = tempRepo();
+    writeMeta(dir, {
+      workspace: "broomva",
+      schemaVersion: 1,
+      displayCounters: { BRO: 1700, OPS: 12 },
+    });
+    const merged = seedDisplayCounters(dir, { BRO: 1646, MIN: 2 });
+    expect(merged).toEqual({ BRO: 1700, OPS: 12, MIN: 2 });
+    expect(readMeta(dir).displayCounters).toEqual({ BRO: 1700, OPS: 12, MIN: 2 });
+  });
+
+  test("tolerates meta.json without a displayCounters field", () => {
+    const dir = tempRepo();
+    writeMeta(dir, { workspace: "broomva", schemaVersion: 1 });
+    expect(seedDisplayCounters(dir, { BRO: 1646 })).toEqual({ BRO: 1646 });
   });
 });

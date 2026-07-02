@@ -137,10 +137,13 @@ export async function fetchLinearExport(): Promise<LinearExport> {
     }),
   );
 
-  // projects + milestones (milestones hang off projects in the API)
+  // projects + milestones (milestones hang off projects in the API);
+  // includeArchived so issues inside archived projects keep their linkage
   const projects: LinearProjectExport[] = [];
   const milestones: LinearMilestoneExport[] = [];
-  for (const project of await allPages((after) => client.projects(pageArgs(after)))) {
+  for (const project of await allPages((after) =>
+    client.projects({ ...pageArgs(after), includeArchived: true }),
+  )) {
     let teamLinearIds: string[] = [];
     try {
       teamLinearIds = (await allPages((after) => project.teams(pageArgs(after)))).map((t) => t.id);
