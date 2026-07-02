@@ -144,7 +144,11 @@ export function listStates(db: Database, teamId?: string): StateRecord[] {
 
 /**
  * All states matching `ref`, optionally scoped to a team, in deterministic
- * order: ULID → state_type (exact, lowercased) → name (ci).
+ * order: ULID → name (ci) → state_type (exact, lowercased). The NAME tier
+ * outranks the type tier on purpose: a user naming a specific state (e.g. a
+ * state called "Backlog") must never be silently rerouted to a different
+ * state that merely carries the matching TYPE (e.g. an "Icebox" of type
+ * backlog). Type references still work whenever no state name shadows them.
  */
 export function resolveStates(db: Database, ref: string, teamId?: string): StateRecord[] {
   const scope = teamId === undefined ? "" : " AND team_id = ?";
@@ -155,19 +159,19 @@ export function resolveStates(db: Database, ref: string, teamId?: string): State
       .all(ref, ...scopeParams);
     if (rows.length > 0) return rows.map(stateRecord);
   }
-  const byType = db
-    .query<StateRow, Binding[]>(
-      `SELECT * FROM workflow_states WHERE deleted = 0 AND state_type = ?${scope} ` +
-        "ORDER BY position, id",
-    )
-    .all(ref.toLowerCase(), ...scopeParams);
-  if (byType.length > 0) return byType.map(stateRecord);
-  return db
+  const byName = db
     .query<StateRow, Binding[]>(
       `SELECT * FROM workflow_states WHERE deleted = 0 AND name = ? COLLATE NOCASE${scope} ` +
         "ORDER BY position, id",
     )
-    .all(ref, ...scopeParams)
+    .all(ref, ...scopeParams);
+  if (byName.length > 0) return byName.map(stateRecord);
+  return db
+    .query<StateRow, Binding[]>(
+      `SELECT * FROM workflow_states WHERE deleted = 0 AND state_type = ?${scope} ` +
+        "ORDER BY position, id",
+    )
+    .all(ref.toLowerCase(), ...scopeParams)
     .map(stateRecord);
 }
 
@@ -668,8 +672,11 @@ const CLOSED_TYPES = "('completed', 'canceled')";
  * archived), and not blocked. Blocked = a non-deleted `blocks` relation
  * points AT the issue (`related_issue_id = issue`) from a non-deleted
  * blocker whose state_type is not completed/canceled (a blocker with no
- * resolvable state counts as open — conservative). Ordered by priority
- * (urgent → low, none last), then created_at.
+ * resolvable state counts as open — conservative). Deliberate semantics:
+ * an ARCHIVED-but-open blocker STILL BLOCKS — archiving hides an issue,
+ * it does not complete it; complete/cancel the blocker (or unrelate) to
+ * unblock dependents. Ordered by priority (urgent → low, none last), then
+ * created_at.
  */
 export function readyIssues(db: Database, team?: string): IssueRecord[] {
   const where: string[] = [

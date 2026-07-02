@@ -3,6 +3,7 @@ import { appendFileSync, mkdtempSync, rmSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { serializeEvent } from "@kanon/core";
+import { loadLog } from "./log";
 import { openProjection, projectionChecksum } from "./projection";
 import { getIssue } from "./queries";
 import { E, entityId, fixtureEvent, testId, writeFixture } from "./testing";
@@ -133,6 +134,44 @@ describe("openProjection", () => {
     projection.refresh();
     expect(getIssue(projection.db, entityId(E.issueStore))?.identifier).toBe("BRO-2");
     expect(getIssue(projection.db, entityId(61))?.identifier).toBeNull();
+    projection.close();
+  });
+
+  test("same-count/same-head CONTENT change still rebuilds (content hash)", () => {
+    const dir = tempRepo();
+    writeFixture(dir);
+    const projection = openProjection(dir, { onWarn: () => {} });
+    projection.refresh();
+    expect(projection.refresh().rebuilt).toBe(false); // baseline: up to date
+
+    // Byzantine duplicate of a MID-STREAM event (not the head) with content
+    // engineered to WIN the merge tie-break (smaller canonical
+    // serialization). Dedupe keeps the merged COUNT unchanged and the HEAD
+    // id unchanged — only the canonical CONTENT of the stream moved.
+    const conflicting = fixtureEvent({
+      seq: 21, // collides with the issueStore create
+      op: "create",
+      model: "issue",
+      entity: E.issueStore,
+      ts: "2026-06-12T09:00:00.000Z",
+      data: { number: 2, title: "AAA" },
+    });
+    appendFileSync(join(dir, "events", "2026-06.jsonl"), `${serializeEvent(conflicting)}\n`);
+
+    const report = loadLog(dir);
+    expect(report.conflicts.length).toBe(1);
+    const winner = report.events.find((event) => event.id === testId(21));
+
+    const result = projection.refresh();
+    expect(result.rebuilt).toBe(true); // head/count alone would have missed this
+    // The projection reflects the tie-break winner, byte-identical to a
+    // forced rebuild from the canonical stream.
+    const afterRefresh = projectionChecksum(projection.db);
+    expect(getIssue(projection.db, entityId(E.issueStore))?.title).toBe(
+      winner?.data.title as string,
+    );
+    projection.rebuild();
+    expect(projectionChecksum(projection.db)).toBe(afterRefresh);
     projection.close();
   });
 

@@ -181,7 +181,7 @@ describe("minimal list/get surfaces", () => {
     expect(getTeam(db, "Broomva")?.key).toBe("BRO");
   });
 
-  test("states ordered by position; resolution id → type → name", () => {
+  test("states ordered by position; resolution id → name → type", () => {
     const states = listStates(db, entityId(E.team));
     expect(states.map((state) => state.name)).toEqual([
       "Triage",
@@ -192,12 +192,56 @@ describe("minimal list/get surfaces", () => {
       "Canceled",
       "Duplicate",
     ]);
-    expect(resolveStates(db, "canceled").map((state) => state.name)).toEqual([
-      "Canceled",
-      "Duplicate",
-    ]);
+    // "canceled" matches the state NAMED Canceled (name tier) — not every
+    // state of TYPE canceled (which would also pull in Duplicate).
+    expect(resolveStates(db, "canceled").map((state) => state.name)).toEqual(["Canceled"]);
     expect(resolveStates(db, "duplicate")[0]?.name).toBe("Duplicate");
+    // Type tier still reachable when no name shadows it.
+    expect(resolveStates(db, "unstarted").map((state) => state.name)).toEqual(["Todo"]);
     expect(resolveStates(db, entityId(E.stateTodo))[0]?.name).toBe("Todo");
+  });
+
+  test("a state NAME is never shadowed by another state's TYPE", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "kanon-shadow-"));
+    try {
+      // "Icebox" carries TYPE backlog; a different state is NAMED "Backlog".
+      writeEvents(scratch, [
+        fixtureEvent({
+          seq: 1,
+          op: "create",
+          model: "team",
+          entity: 0,
+          ts: "2026-07-01T00:00:00.000Z",
+          data: { key: "T", name: "Team" },
+        }),
+        fixtureEvent({
+          seq: 2,
+          op: "create",
+          model: "workflow_state",
+          entity: 1,
+          ts: "2026-07-01T00:00:00.000Z",
+          data: { teamId: entityId(0), name: "Icebox", type: "backlog", position: 0 },
+        }),
+        fixtureEvent({
+          seq: 3,
+          op: "create",
+          model: "workflow_state",
+          entity: 2,
+          ts: "2026-07-01T00:00:00.000Z",
+          data: { teamId: entityId(0), name: "Backlog", type: "unstarted", position: 1 },
+        }),
+      ]);
+      const scratchProjection = openProjection(scratch);
+      scratchProjection.refresh();
+      const matches = resolveStates(scratchProjection.db, "Backlog", entityId(0));
+      expect(matches.map((state) => state.name)).toEqual(["Backlog"]);
+      expect(matches[0]?.stateType).toBe("unstarted");
+      // The type reference resolves to Icebox only via an unshadowed ref.
+      expect(resolveStates(scratchProjection.db, "backlog", entityId(0))[0]?.name).toBe("Backlog"); // name tier wins even lowercased
+      scratchProjection.close();
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 
   test("actors resolve by email then name then display name", () => {
