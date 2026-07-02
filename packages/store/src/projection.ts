@@ -286,7 +286,12 @@ export function openProjection(dataRepoDir: string, options: ProjectionOptions =
       setMeta.run("event_count", String(events.length));
       setMeta.run("content_hash", hash);
     });
-    run();
+    // IMMEDIATE, not deferred: a deferred transaction starts with a read
+    // lock and upgrades to a write lock mid-flight — when two connections
+    // race, SQLite reports the potential deadlock as an INSTANT
+    // SQLITE_BUSY that BYPASSES busy_timeout. Taking the write lock up
+    // front makes concurrent rebuilds queue on the timeout instead.
+    run.immediate();
     return { rebuilt: true, eventCount: events.length, headId, conflictCount };
   };
 
