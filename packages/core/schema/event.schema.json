@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/broomva/kanon/packages/core/schema/event.schema.json",
   "title": "Kanon Event v1",
-  "description": "One attributed mutation in a Kanon workspace log. Events are append-only JSONL lines; the log is canonical and every store (SQLite, Postgres, UI) is a rebuildable projection. Language-neutral contract: Rust (Symphony/Lago) and TypeScript both read this.",
+  "description": "One attributed mutation in a Kanon workspace log. Events are append-only JSONL lines; the log is canonical and every store (SQLite, Postgres, UI) is a rebuildable projection. Language-neutral contract: any runtime — TypeScript, Rust, Python, shell — can read and write the log directly.",
   "type": "object",
   "required": ["id", "ts", "workspace", "actor", "op", "model", "modelId", "data", "v"],
   "additionalProperties": false,
