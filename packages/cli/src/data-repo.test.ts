@@ -47,6 +47,10 @@ describe("initDataRepo", () => {
     const result = initDataRepo({ dir, workspace: "broomva", actor, git: true });
     expect(result.gitInitialized).toBe(true);
     expect(readFileSync(join(dir, ".gitignore"), "utf8")).toContain("state.db");
+    // Segment appends must UNION on merge — the contract `kanon sync` relies on.
+    expect(readFileSync(join(dir, ".gitattributes"), "utf8")).toContain(
+      "events/*.jsonl merge=union",
+    );
   });
 });
 

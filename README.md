@@ -44,12 +44,12 @@ segments + snapshots from day one, disposable caches, and a first-class rendezvo
   `assignee` (accountable human) and `delegate` (agent); agent sessions follow the
   thought / elicitation / action / response / error activity model.
 
-## Status: M0
+## Status: M1
 
 | Milestone | Scope | Status |
 |---|---|---|
-| M0 | Scaffold, event schema v1, `kanon init` / `kanon validate` | **here** |
-| M1 | Core merge/replay + SQLite projection + CLI lifecycle + Linear import | next |
+| M0 | Scaffold, event schema v1, `kanon init` / `kanon validate` | done |
+| M1 | Core merge/replay + SQLite projection + CLI lifecycle + Linear import | **here** |
 | M2 | Rendezvous server: REST v1, ID allocation, webhooks, event feed | planned |
 | M3 | MCP parity + agent sessions/delegation | planned |
 | M4 | Web UI (list/board/detail/cmd-K, SSE) | planned |
@@ -64,7 +64,45 @@ bun run ci          # lint + typecheck + tests + build
 # create a workspace data repo
 bun packages/cli/src/index.ts init ~/kanon-data-myteam --workspace myteam
 bun packages/cli/src/index.ts validate ~/kanon-data-myteam
+
+# work
+alias kanon="bun $PWD/packages/cli/src/index.ts"   # or build the binary: bun run --cwd packages/cli build
+export KANON_REPO=~/kanon-data-myteam
+kanon team create --key BRO --name Broomva
+kanon issue create --team BRO --title "Ship M1" --priority 2 --label infra
+kanon issue ready --team BRO
+kanon issue claim BRO-1
+kanon sync
 ```
+
+## CLI commands
+
+Lifecycle commands take `--repo <dir>` (default `$KANON_REPO`, then cwd) and `--json`
+(machine-readable output on every read command). `<ref>` is a ULID or a display
+identifier like `BRO-123` (case-insensitive). Actor identity comes from
+`KANON_ACTOR` / `KANON_ACTOR_TYPE` (`agent` for agents) / `KANON_SESSION`, falling
+back to `git config user.email`, then `user@host`.
+
+| Command | What it does |
+|---|---|
+| `kanon init <dir> --workspace <slug> [--no-git]` | create a data repo (log + meta + `.gitattributes` with `events/*.jsonl merge=union`) |
+| `kanon validate <dir>` | schema-check every event, flag duplicates/corruption |
+| `kanon team create --key BRO --name Broomva` | create a team + the 7 default workflow states (Triage/Backlog/Todo/In Progress/Done/Canceled/Duplicate) |
+| `kanon team list` | list teams |
+| `kanon issue create --team BRO --title ... [--description --priority 0-4 --estimate --assignee --delegate --project --milestone --parent --label a --label b]` | create an issue; allocates the next display number and prints `BRO-1652` |
+| `kanon issue show <ref>` | issue + comments + relations |
+| `kanon issue list [--team --state --assignee --delegate --project --label --priority --parent --updated-after --updated-before --query --no-archived --order-by --order-dir --limit --offset]` | filtered listing |
+| `kanon issue ready [--team]` | unblocked backlog/unstarted work — the agent queue |
+| `kanon issue update <ref> [--state <type\|name\|id> --title --description --priority --estimate --assignee --delegate --add-label --remove-label]` | field updates (per-field LWW) |
+| `kanon issue claim <ref>` | agents take the delegate seat, humans take assignee; moves to a started state |
+| `kanon issue archive <ref>` | archive |
+| `kanon issue comment <ref> --body ...` | comment (actor entity minted on first use) |
+| `kanon issue relate <ref> --blocks\|--blocked-by\|--related-to <ref2>` | relations; `blocks` direction: `issue_id` blocks `related_issue_id` |
+| `kanon issue unrelate <ref> --blocks\|--blocked-by\|--related-to <ref2>` | remove a relation |
+| `kanon project create/list`, `kanon milestone create/list` | projects + milestones |
+| `kanon sync` | `git add` log paths → commit → `pull --rebase` (segments union-merge) → push; each step surfaced |
+| `kanon doctor` | repair post-merge duplicate identifiers (later-ULID issue gets the next free number) + stale meta.json watermarks |
+| `kanon log [--limit N]` | last N events of the canonical stream |
 
 The event contract is language-neutral: [`packages/core/schema/event.schema.json`](packages/core/schema/event.schema.json).
 Rust, Python, or anything else can read and write the log directly.
