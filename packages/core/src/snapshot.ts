@@ -45,6 +45,11 @@ export interface SnapshotV1 {
  * Building on a null-prototype object plus the filter closes both holes.
  */
 function copyFields(src: Record<string, unknown>): Record<string, unknown> {
+  // Untrusted snapshots can omit or mangle `fields` entirely; fail loudly and
+  // typed rather than with a bare TypeError from Object.keys(undefined).
+  if (src === null || src === undefined || typeof src !== "object" || Array.isArray(src)) {
+    throw new Error("malformed snapshot: entity fields must be a plain object");
+  }
   const out: Record<string, unknown> = Object.create(null);
   for (const key of Object.keys(src).sort()) {
     if (key.startsWith(RESERVED_FIELD_PREFIX)) {

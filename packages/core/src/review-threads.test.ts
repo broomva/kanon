@@ -60,3 +60,21 @@ describe("stableStringify identity strictness (PR #1 review thread 2)", () => {
     expect(stableStringify(nullProto)).toBe('{"k":1}');
   });
 });
+
+describe("malformed snapshot entities (PR #3 review thread)", () => {
+  test("entity missing fields throws a typed malformed-snapshot error, not a bare TypeError", () => {
+    const event = createEvent({
+      workspace: "w",
+      actor,
+      op: "create",
+      model: "issue",
+      data: { title: "t" },
+    });
+    const clean = takeSnapshot(replay([event]));
+    const crafted = JSON.parse(JSON.stringify(clean)) as SnapshotV1;
+    // biome-ignore lint/performance/noDelete: crafting malformed input on purpose
+    delete (Object.values(Object.values(crafted.entities)[0] ?? {})[0] as { fields?: unknown })
+      .fields;
+    expect(() => restoreSnapshot(crafted)).toThrow("malformed snapshot");
+  });
+});
