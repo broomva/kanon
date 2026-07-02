@@ -15,6 +15,7 @@
 
 import { SQLiteError } from "bun:sqlite";
 import { resolve } from "node:path";
+import { initDataRepo, validateDataRepo } from "@kanon/store";
 import { resolveActor } from "./actor";
 import { CliError, flagBool, parseFlags, requireFlag } from "./args";
 import { doctor } from "./commands/doctor";
@@ -34,7 +35,6 @@ import { logCommand } from "./commands/log";
 import { milestoneCreate, milestoneList, projectCreate, projectList } from "./commands/project";
 import { sync } from "./commands/sync";
 import { teamCreate, teamList } from "./commands/team";
-import { initDataRepo, validateDataRepo } from "./data-repo";
 
 const VERSION = "0.2.0";
 

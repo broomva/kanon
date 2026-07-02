@@ -1,0 +1,17 @@
+{
+  "name": "@kanon/server",
+  "version": "0.1.0",
+  "description": "Kanon rendezvous server — REST v1, event feed, SSE, webhooks, ID allocation over the git-carried event log",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@kanon/core": "workspace:*",
+    "@kanon/store": "workspace:*",
+    "hono": "^4.6.0"
+  },
+  "scripts": {
+    "start": "bun src/index.ts",
+    "test": "bun test",
+    "check-types": "tsc --noEmit"
+  }
+}
