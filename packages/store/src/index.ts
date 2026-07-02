@@ -7,6 +7,8 @@
  * `ReplayDivergenceError` class of failures cannot occur here.
  */
 
+export * from "./data-repo";
+export * from "./defaults";
 export * from "./log";
 export * from "./projection";
 export * from "./queries";

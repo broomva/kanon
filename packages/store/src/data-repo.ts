@@ -1,14 +1,35 @@
 /**
- * Data-repo layout: the per-workspace git repository that holds the canonical
- * event log. Everything else (SQLite, Postgres, UI state) derives from it.
+ * Data-repo layout + write path: the per-workspace git repository that holds
+ * the canonical event log. Everything else (SQLite, server state, UI state)
+ * derives from it.
  *
  *   <repo>/
  *     meta.json            workspace slug, schema version, counter watermark
  *     events/2026-07.jsonl monthly append-only segments
- *     snapshots/           compacted state + cursor (written by compaction, M1)
+ *     snapshots/           compacted state + cursor (written by compaction)
+ *
+ * Shared by every writer surface (CLI, rendezvous server): append is a true
+ * O_APPEND write, meta.json writes are atomic (tmp + rename), and display-
+ * number allocation is serialized through an O_EXCL lockfile
+ * (meta.json.lock). Two concurrent writers on ONE clone would otherwise both
+ * read watermark N and both mint N+1.
+ *
+ * Allocation contract: next number = max(displayCounters[key], max number in
+ * projection) + 1, watermark persisted back. The projection max includes
+ * deleted/archived issues — identifiers are never reused.
  */
 
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import type { Database } from "bun:sqlite";
+import {
+  appendFileSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   createEvent,
@@ -165,4 +186,99 @@ export function validateDataRepo(dir: string): ValidateResult {
   }
 
   return { ok: errors.length === 0, workspace, eventCount, errors };
+}
+
+// ---------------------------------------------------------------------------
+// meta.json — read / atomic write / lock / display-number allocation
+// ---------------------------------------------------------------------------
+
+export function readDataRepoMeta(dir: string): DataRepoMeta {
+  return JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")) as DataRepoMeta;
+}
+
+/** Atomic write (tmp + rename): a crash mid-write can never tear meta.json. */
+export function writeDataRepoMeta(dir: string, meta: DataRepoMeta): void {
+  const path = join(dir, "meta.json");
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, `${JSON.stringify(meta, null, 2)}\n`);
+  renameSync(tmp, path);
+}
+
+const LOCK_STALE_MS = 10_000;
+const LOCK_TIMEOUT_MS = 5_000;
+const LOCK_RETRY_MS = 20;
+
+/** Thrown when the meta.json lock cannot be acquired within the timeout. */
+export class MetaLockError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "MetaLockError";
+  }
+}
+
+/**
+ * Serialize meta.json read-modify-write across concurrent kanon processes
+ * on the same clone: O_EXCL lockfile with retry, timeout, and stale-lock
+ * detection by age (a crashed holder never wedges the repo for good).
+ */
+export function withMetaLock<T>(dir: string, fn: () => T): T {
+  const lockPath = join(dir, "meta.json.lock");
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  for (;;) {
+    try {
+      writeFileSync(lockPath, `${process.pid}\n`, { flag: "wx" });
+      break;
+    } catch {
+      try {
+        const age = Date.now() - statSync(lockPath).mtimeMs;
+        if (age > LOCK_STALE_MS) {
+          rmSync(lockPath, { force: true }); // crashed holder — reclaim
+          continue;
+        }
+      } catch {
+        continue; // lock vanished between attempts — retry immediately
+      }
+      if (Date.now() > deadline) {
+        throw new MetaLockError(
+          `could not acquire ${lockPath} within ${LOCK_TIMEOUT_MS}ms — another kanon process ` +
+            "is allocating; retry, or delete the lock file if its holder crashed",
+        );
+      }
+      Bun.sleepSync(LOCK_RETRY_MS);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    rmSync(lockPath, { force: true });
+  }
+}
+
+/**
+ * Allocate the next display number for a team key and persist the watermark.
+ * Callers MUST hold the meta lock (`withMetaLock`) — this is a
+ * read-modify-write of meta.json. `db` is the open SQLite projection of the
+ * same data repo (the projection max keeps sync-imported numbers from being
+ * re-minted).
+ */
+export function allocateDisplayNumber(
+  dir: string,
+  db: Database,
+  teamId: string,
+  teamKey: string,
+): number {
+  const meta = readDataRepoMeta(dir);
+  const counters = meta.displayCounters ?? {};
+  const watermark = counters[teamKey] ?? 0;
+  const row = db
+    .query<{ max: number | null }, [string]>(
+      "SELECT MAX(number) AS max FROM issues WHERE team_id = ?",
+    )
+    .get(teamId);
+  const projectionMax = row?.max ?? 0;
+  const next = Math.max(watermark, projectionMax) + 1;
+  counters[teamKey] = next;
+  meta.displayCounters = counters;
+  writeDataRepoMeta(dir, meta);
+  return next;
 }

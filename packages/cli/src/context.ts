@@ -5,25 +5,21 @@
  *   createEvent (@kanon/core) → appendEvents (appendFileSync semantics)
  *   → projection.refresh()
  *
- * Two durability rules live here:
+ * The durability rules live in @kanon/store (data-repo.ts) and are shared
+ * with the rendezvous server:
  *
  * 1. The post-append refresh is NON-FATAL. Once appendEvents returned, the
  *    write is durable in the canonical log; the SQLite cache is disposable
  *    and rebuilds on the next read. Failing the command AFTER a successful
  *    append would make retrying agents double-create.
  * 2. Display-number allocation is serialized through an O_EXCL lockfile
- *    (meta.json.lock). meta.json is a read-modify-write watermark, so two
- *    concurrent `issue create` processes on ONE clone would otherwise both
- *    read watermark N and both mint N+1. The lock covers allocate→append;
- *    meta writes are atomic (tmp + rename) so a crash never tears the file.
- *
- * Contract: next number = max(displayCounters[key], max number in
- * projection) + 1, watermark persisted back. The projection max includes
- * deleted/archived issues — identifiers are never reused.
+ *    (meta.json.lock) — `withMetaLock` + `allocateDisplayNumber` in
+ *    @kanon/store. This module only adapts them to the CLI (CliError on
+ *    lock timeout).
  */
 
-import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import {
   createEvent,
   type EventActor,
@@ -32,9 +28,18 @@ import {
   type Op,
   ulid,
 } from "@kanon/core";
-import { openProjection, type Projection } from "@kanon/store";
+import {
+  appendEvents,
+  type DataRepoMeta,
+  MetaLockError,
+  openProjection,
+  type Projection,
+  readDataRepoMeta,
+  allocateDisplayNumber as storeAllocateDisplayNumber,
+  withMetaLock as storeWithMetaLock,
+  writeDataRepoMeta,
+} from "@kanon/store";
 import { CliError, type FlagValue, flagString } from "./args";
-import { appendEvents, type DataRepoMeta } from "./data-repo";
 
 export interface RepoContext {
   dir: string;
@@ -56,56 +61,24 @@ export function resolveRepoDir(flags: Map<string, FlagValue>): string {
 }
 
 export function readMeta(dir: string): DataRepoMeta {
-  return JSON.parse(readFileSync(`${dir}/meta.json`, "utf8")) as DataRepoMeta;
+  return readDataRepoMeta(dir);
 }
 
 /** Atomic write (tmp + rename): a crash mid-write can never tear meta.json. */
 export function writeMeta(dir: string, meta: DataRepoMeta): void {
-  const path = join(dir, "meta.json");
-  const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, `${JSON.stringify(meta, null, 2)}\n`);
-  renameSync(tmp, path);
+  writeDataRepoMeta(dir, meta);
 }
 
-const LOCK_STALE_MS = 10_000;
-const LOCK_TIMEOUT_MS = 5_000;
-const LOCK_RETRY_MS = 20;
-
 /**
- * Serialize meta.json read-modify-write across concurrent kanon processes
- * on the same clone: O_EXCL lockfile with retry, timeout, and stale-lock
- * detection by age (a crashed holder never wedges the repo for good).
+ * @kanon/store's meta.json lock, adapted to the CLI: a lock timeout is a
+ * user-facing retryable condition (CliError → message + exit 1), not a crash.
  */
 export function withMetaLock<T>(dir: string, fn: () => T): T {
-  const lockPath = join(dir, "meta.json.lock");
-  const deadline = Date.now() + LOCK_TIMEOUT_MS;
-  for (;;) {
-    try {
-      writeFileSync(lockPath, `${process.pid}\n`, { flag: "wx" });
-      break;
-    } catch {
-      try {
-        const age = Date.now() - statSync(lockPath).mtimeMs;
-        if (age > LOCK_STALE_MS) {
-          rmSync(lockPath, { force: true }); // crashed holder — reclaim
-          continue;
-        }
-      } catch {
-        continue; // lock vanished between attempts — retry immediately
-      }
-      if (Date.now() > deadline) {
-        throw new CliError(
-          `could not acquire ${lockPath} within ${LOCK_TIMEOUT_MS}ms — another kanon process ` +
-            "is allocating; retry, or delete the lock file if its holder crashed",
-        );
-      }
-      Bun.sleepSync(LOCK_RETRY_MS);
-    }
-  }
   try {
-    return fn();
-  } finally {
-    rmSync(lockPath, { force: true });
+    return storeWithMetaLock(dir, fn);
+  } catch (error) {
+    if (error instanceof MetaLockError) throw new CliError(error.message);
+    throw error;
   }
 }
 
@@ -183,23 +156,11 @@ export function compact(data: Record<string, unknown>): Record<string, unknown> 
 /**
  * Allocate the next display number for a team key and persist the watermark.
  * Callers MUST hold the meta lock (use `allocateAndAppend`) — this is a
- * read-modify-write of meta.json.
+ * read-modify-write of meta.json. Delegates to @kanon/store (shared with the
+ * rendezvous server).
  */
 export function allocateDisplayNumber(ctx: RepoContext, teamId: string, teamKey: string): number {
-  const meta = readMeta(ctx.dir);
-  const counters = meta.displayCounters ?? {};
-  const watermark = counters[teamKey] ?? 0;
-  const row = ctx.projection.db
-    .query<{ max: number | null }, [string]>(
-      "SELECT MAX(number) AS max FROM issues WHERE team_id = ?",
-    )
-    .get(teamId);
-  const projectionMax = row?.max ?? 0;
-  const next = Math.max(watermark, projectionMax) + 1;
-  counters[teamKey] = next;
-  meta.displayCounters = counters;
-  writeMeta(ctx.dir, meta);
-  return next;
+  return storeAllocateDisplayNumber(ctx.dir, ctx.projection.db, teamId, teamKey);
 }
 
 /**

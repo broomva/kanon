@@ -48,6 +48,24 @@ function baseRecord(row: BaseRow): BaseRecord {
 }
 
 // ---------------------------------------------------------------------------
+// Models without a dedicated table (other_entities)
+// ---------------------------------------------------------------------------
+
+/**
+ * Non-deleted entities of a model that has no dedicated projection table
+ * (webhook, api_key, initiative, ...). All fields live in `data` (parsed
+ * data_json overflow).
+ */
+export function listModelEntities(db: Database, model: string): BaseRecord[] {
+  return db
+    .query<BaseRow, [string]>(
+      "SELECT * FROM other_entities WHERE deleted = 0 AND model = ? ORDER BY id",
+    )
+    .all(model)
+    .map(baseRecord);
+}
+
+// ---------------------------------------------------------------------------
 // Teams
 // ---------------------------------------------------------------------------
 

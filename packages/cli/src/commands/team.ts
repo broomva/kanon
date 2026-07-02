@@ -7,24 +7,17 @@
  */
 
 import { ulid } from "@kanon/core";
-import { listStates, listTeams, resolveTeams } from "@kanon/store";
+import {
+  DEFAULT_STATES,
+  listStates,
+  listTeams,
+  resolveTeams,
+  TEAM_KEY_PATTERN,
+} from "@kanon/store";
 import { resolveActor } from "../actor";
 import { CliError, flagBool, parseFlags, requireFlag } from "../args";
 import { openRepo, writeEvents } from "../context";
 import { emit } from "../output";
-
-/** Identifier charset: keys become the TEAM half of TEAM-123, forever. */
-export const TEAM_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/;
-
-export const DEFAULT_STATES = [
-  { name: "Triage", type: "triage", color: "#8a8f98", position: 0 },
-  { name: "Backlog", type: "backlog", color: "#bec2c8", position: 1 },
-  { name: "Todo", type: "unstarted", color: "#e2e2e2", position: 2 },
-  { name: "In Progress", type: "started", color: "#f2c94c", position: 3 },
-  { name: "Done", type: "completed", color: "#5e6ad2", position: 4 },
-  { name: "Canceled", type: "canceled", color: "#95a2b3", position: 5 },
-  { name: "Duplicate", type: "canceled", color: "#95a2b3", position: 6 },
-] as const;
 
 const COMMON = { json: "boolean", repo: "value" } as const;
 
