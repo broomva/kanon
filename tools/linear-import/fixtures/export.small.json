@@ -1,0 +1,202 @@
+{
+  "workspace": "broomva",
+  "teams": [
+    {
+      "linearId": "lin-team-bro",
+      "key": "BRO",
+      "name": "Broomva",
+      "states": [
+        {
+          "linearId": "lin-state-backlog",
+          "name": "Backlog",
+          "type": "backlog",
+          "color": "#bec2c8",
+          "position": 0
+        },
+        {
+          "linearId": "lin-state-todo",
+          "name": "Todo",
+          "type": "unstarted",
+          "color": "#e2e2e2",
+          "position": 1
+        },
+        {
+          "linearId": "lin-state-in-progress",
+          "name": "In Progress",
+          "type": "started",
+          "color": "#f2c94c",
+          "position": 2
+        },
+        {
+          "linearId": "lin-state-in-review",
+          "name": "In Review",
+          "type": "started",
+          "color": "#0f783c",
+          "position": 3
+        },
+        {
+          "linearId": "lin-state-done",
+          "name": "Done",
+          "type": "completed",
+          "color": "#5e6ad2",
+          "position": 4
+        },
+        {
+          "linearId": "lin-state-canceled",
+          "name": "Canceled",
+          "type": "canceled",
+          "color": "#95a2b3",
+          "position": 5
+        },
+        {
+          "linearId": "lin-state-duplicate",
+          "name": "Duplicate",
+          "type": "canceled",
+          "color": "#95a2b3",
+          "position": 6
+        }
+      ]
+    }
+  ],
+  "labels": [
+    {
+      "linearId": "lin-label-bug",
+      "name": "Bug",
+      "color": "#eb5757",
+      "teamLinearId": "lin-team-bro"
+    },
+    {
+      "linearId": "lin-label-feature",
+      "name": "Feature",
+      "color": "#bb87fc",
+      "teamLinearId": "lin-team-bro"
+    }
+  ],
+  "users": [
+    {
+      "linearId": "lin-user-carlos",
+      "name": "Carlos D. Escobar-Valbuena",
+      "displayName": "broomva",
+      "email": "carlos@broomva.tech"
+    },
+    {
+      "linearId": "lin-user-claude",
+      "name": "Claude",
+      "displayName": "claude-agent",
+      "email": "claude@broomva.tech",
+      "isAgent": true
+    }
+  ],
+  "projects": [
+    {
+      "linearId": "lin-project-kanon",
+      "name": "Kanon",
+      "description": "Agent-native work tracker",
+      "state": "started",
+      "leadLinearId": "lin-user-carlos",
+      "targetDate": "2026-09-30",
+      "teamLinearIds": ["lin-team-bro"]
+    }
+  ],
+  "milestones": [
+    {
+      "linearId": "lin-milestone-m1",
+      "projectLinearId": "lin-project-kanon",
+      "name": "M1 — merge/replay + CLI + import",
+      "targetDate": "2026-07-31"
+    }
+  ],
+  "initiatives": [],
+  "issues": [
+    {
+      "linearId": "lin-issue-1643",
+      "teamLinearId": "lin-team-bro",
+      "number": 1643,
+      "identifier": "BRO-1643",
+      "title": "Spike: evaluate beads-style git tracker",
+      "description": "Archived after the spike concluded.",
+      "priority": 3,
+      "stateLinearId": "lin-state-done",
+      "assigneeLinearId": "lin-user-carlos",
+      "labelLinearIds": ["lin-label-feature"],
+      "projectLinearId": "lin-project-kanon",
+      "createdAt": "2026-06-20T10:00:00.000Z",
+      "updatedAt": "2026-06-25T12:00:00.000Z",
+      "archivedAt": "2026-06-26T09:00:00.000Z",
+      "relations": []
+    },
+    {
+      "linearId": "lin-issue-1644",
+      "teamLinearId": "lin-team-bro",
+      "number": 1644,
+      "identifier": "BRO-1644",
+      "title": "Core merge/replay",
+      "description": "ULID-ordered union merge with per-field LWW.",
+      "priority": 1,
+      "estimate": 5,
+      "stateLinearId": "lin-state-in-progress",
+      "assigneeLinearId": "lin-user-claude",
+      "labelLinearIds": ["lin-label-feature"],
+      "projectLinearId": "lin-project-kanon",
+      "milestoneLinearId": "lin-milestone-m1",
+      "createdAt": "2026-06-21T09:00:00.000Z",
+      "updatedAt": "2026-06-27T16:30:00.000Z",
+      "relations": [
+        {
+          "type": "blocks",
+          "relatedIssueLinearId": "lin-issue-1645"
+        }
+      ]
+    },
+    {
+      "linearId": "lin-issue-1645",
+      "teamLinearId": "lin-team-bro",
+      "number": 1645,
+      "identifier": "BRO-1645",
+      "title": "SQLite projection",
+      "description": "Rebuildable cache the CLI reads.",
+      "priority": 2,
+      "estimate": 3,
+      "stateLinearId": "lin-state-todo",
+      "labelLinearIds": [],
+      "projectLinearId": "lin-project-kanon",
+      "milestoneLinearId": "lin-milestone-m1",
+      "createdAt": "2026-06-22T11:00:00.000Z",
+      "updatedAt": "2026-06-26T08:45:00.000Z",
+      "relations": []
+    },
+    {
+      "linearId": "lin-issue-1646",
+      "teamLinearId": "lin-team-bro",
+      "number": 1646,
+      "identifier": "BRO-1646",
+      "title": "CLI issue lifecycle",
+      "description": "Sub-issue of the merge/replay work.",
+      "priority": 2,
+      "stateLinearId": "lin-state-backlog",
+      "parentLinearId": "lin-issue-1644",
+      "labelLinearIds": ["lin-label-bug", "lin-label-feature"],
+      "projectLinearId": "lin-project-kanon",
+      "createdAt": "2026-06-23T14:00:00.000Z",
+      "updatedAt": "2026-06-24T10:15:00.000Z",
+      "relations": []
+    }
+  ],
+  "comments": [
+    {
+      "linearId": "lin-comment-1",
+      "issueLinearId": "lin-issue-1644",
+      "body": "Union merge needs property tests before this lands.",
+      "userLinearId": "lin-user-carlos",
+      "createdAt": "2026-06-22T08:00:00.000Z"
+    },
+    {
+      "linearId": "lin-comment-2",
+      "issueLinearId": "lin-issue-1644",
+      "body": "Added N-clone convergence tests to the plan.",
+      "userLinearId": "lin-user-claude",
+      "parentLinearId": "lin-comment-1",
+      "createdAt": "2026-06-22T09:15:00.000Z"
+    }
+  ]
+}
