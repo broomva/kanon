@@ -13,8 +13,11 @@
  * Intended for plain JSON data (the only thing Kanon events and snapshots
  * carry). Like JSON.stringify: `undefined`, functions, and symbols are
  * omitted from objects and become `null` inside arrays; non-finite numbers
- * become `null`. `toJSON` methods are NOT honored — values are serialized
- * structurally.
+ * become `null`; `bigint` throws a TypeError. `toJSON` methods are NOT
+ * honored. Non-plain objects (Date, Map, Set, class instances) throw a
+ * TypeError instead of silently serializing as `"{}"` — this function is
+ * the content-identity backbone for the merge tie-break and the applied-set
+ * fingerprint, so two distinct values must never compare equal by accident.
  */
 export function stableStringify(value: unknown): string {
   return stringifyValue(value) ?? "null";
@@ -33,13 +36,23 @@ function stringifyValue(value: unknown): string | undefined {
       return value ? "true" : "false";
     case "object":
       break;
+    case "bigint":
+      // JSON.stringify throws on bigint; silently dropping it would let two
+      // different events compare equal. Match the throw.
+      throw new TypeError("stableStringify: bigint is not JSON-serializable");
     default:
-      // undefined, function, symbol, bigint — omitted, as JSON.stringify does.
+      // undefined, function, symbol — omitted, as JSON.stringify does.
       return undefined;
   }
   if (Array.isArray(value)) {
     const parts = value.map((item) => stringifyValue(item) ?? "null");
     return `[${parts.join(",")}]`;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    // Date/Map/Set/class instances have no own enumerable keys and would
+    // serialize as "{}" — collapsing distinct values into one identity.
+    throw new TypeError("stableStringify: non-plain object (Date/Map/class) is not wire-safe");
   }
   const record = value as Record<string, unknown>;
   const parts: string[] = [];
