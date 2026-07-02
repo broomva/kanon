@@ -37,7 +37,7 @@ import {
   requireFlag,
 } from "../args";
 import {
-  allocateDisplayNumber,
+  allocateAndAppend,
   compact,
   type EventInput,
   openRepo,
@@ -95,16 +95,26 @@ function actorEntity(ctx: RepoContext): { id: string; mint?: EventInput } {
   };
 }
 
-/** Resolve a label to an id, minting a team-scoped label when none matches. */
+/**
+ * Resolve a label to an id, minting a team-scoped label when none matches.
+ * `pending` dedupes mints WITHIN one command (keyed by lowercased name):
+ * `--label bug --label Bug` must yield ONE label, not two identical mints
+ * that leave every later reference permanently ambiguous.
+ */
 function labelEntity(
   ctx: RepoContext,
   teamId: string | null,
   ref: string,
   mints: EventInput[],
+  pending: Map<string, string>,
 ): string {
   const existing = findLabel(ctx.projection.db, ref);
   if (existing !== undefined) return existing.id;
+  const key = ref.toLowerCase();
+  const pendingId = pending.get(key);
+  if (pendingId !== undefined) return pendingId;
   const id = ulid();
+  pending.set(key, id);
   mints.push({
     op: "create",
     model: "label",
@@ -172,43 +182,66 @@ export function issueCreate(argv: string[]): void {
   const db = ctx.projection.db;
   const team = requireTeam(db, requireFlag(flags, "team"));
   const title = requireFlag(flags, "title");
-  if (team.key === null) {
+  const teamKey = team.key;
+  if (teamKey === null) {
     throw new CliError(`team ${team.id} has no key — cannot allocate a display number`);
   }
 
+  // Resolve EVERY reference and validate EVERY flag BEFORE allocating the
+  // display number: a failure past allocation would still have advanced the
+  // meta.json watermark and burned an identifier.
+  const description = flagString(flags, "description");
+  const priority = flagInt(flags, "priority", 0, 4);
+  const estimate = flagNumber(flags, "estimate");
   const projectFlag = flagString(flags, "project");
   const project = projectFlag === undefined ? undefined : requireProject(db, projectFlag);
   const milestoneFlag = flagString(flags, "milestone");
   const milestone =
     milestoneFlag === undefined ? undefined : requireMilestone(db, milestoneFlag, project?.id);
   const assigneeFlag = flagString(flags, "assignee");
+  const assigneeId = assigneeFlag === undefined ? undefined : requireActor(db, assigneeFlag).id;
   const delegateFlag = flagString(flags, "delegate");
+  const delegateId = delegateFlag === undefined ? undefined : requireActor(db, delegateFlag).id;
   const parentFlag = flagString(flags, "parent");
+  const parentId = parentFlag === undefined ? undefined : requireIssue(db, parentFlag).id;
+  const stateId = defaultStateId(ctx, team.id);
 
   const mints: EventInput[] = [];
-  const labelIds = flagStrings(flags, "label").map((ref) => labelEntity(ctx, team.id, ref, mints));
-
-  const number = allocateDisplayNumber(ctx, team.id, team.key);
-  const data = compact({
-    teamId: team.id,
-    number,
-    title,
-    description: flagString(flags, "description"),
-    priority: flagInt(flags, "priority", 0, 4),
-    estimate: flagNumber(flags, "estimate"),
-    stateId: defaultStateId(ctx, team.id),
-    assigneeId: assigneeFlag === undefined ? undefined : requireActor(db, assigneeFlag).id,
-    delegateId: delegateFlag === undefined ? undefined : requireActor(db, delegateFlag).id,
-    parentId: parentFlag === undefined ? undefined : requireIssue(db, parentFlag).id,
-    projectId: project?.id,
-    milestoneId: milestone?.id,
-    labelIds: labelIds.length > 0 ? labelIds : undefined,
-  });
+  const pendingLabels = new Map<string, string>();
+  const labelIds = [
+    ...new Set(
+      flagStrings(flags, "label").map((ref) =>
+        labelEntity(ctx, team.id, ref, mints, pendingLabels),
+      ),
+    ),
+  ];
 
   const issueId = ulid();
-  writeEvents(ctx, [...mints, { op: "create", model: "issue", modelId: issueId, data }]);
+  const { number } = allocateAndAppend(ctx, team.id, teamKey, (allocated) => [
+    ...mints,
+    {
+      op: "create",
+      model: "issue",
+      modelId: issueId,
+      data: compact({
+        teamId: team.id,
+        number: allocated,
+        title,
+        description,
+        priority,
+        estimate,
+        stateId,
+        assigneeId,
+        delegateId,
+        parentId,
+        projectId: project?.id,
+        milestoneId: milestone?.id,
+        labelIds: labelIds.length > 0 ? labelIds : undefined,
+      }),
+    },
+  ]);
 
-  const identifier = `${team.key}-${number}`;
+  const identifier = `${teamKey}-${number}`;
   emit(flagBool(flags, "json"), { id: issueId, identifier, number, title }, () => {
     console.log(`created ${identifier} — ${title} (${issueId})`);
   });
@@ -418,8 +451,9 @@ export function issueUpdate(argv: string[]): void {
   const removeLabels = flagStrings(flags, "remove-label");
   if (addLabels.length > 0 || removeLabels.length > 0) {
     const next = new Set(issue.labelIds);
+    const pendingLabels = new Map<string, string>();
     for (const labelRef of addLabels) {
-      next.add(labelEntity(ctx, issue.teamId, labelRef, mints));
+      next.add(labelEntity(ctx, issue.teamId, labelRef, mints, pendingLabels));
     }
     for (const labelRef of removeLabels) {
       const label = requireLabel(db, labelRef);

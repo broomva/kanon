@@ -13,6 +13,9 @@ import { CliError, flagBool, parseFlags, requireFlag } from "../args";
 import { openRepo, writeEvents } from "../context";
 import { emit } from "../output";
 
+/** Identifier charset: keys become the TEAM half of TEAM-123, forever. */
+export const TEAM_KEY_PATTERN = /^[A-Za-z][A-Za-z0-9]*$/;
+
 export const DEFAULT_STATES = [
   { name: "Triage", type: "triage", color: "#8a8f98", position: 0 },
   { name: "Backlog", type: "backlog", color: "#bec2c8", position: 1 },
@@ -33,6 +36,13 @@ export function teamCreate(argv: string[]): void {
   );
   const key = requireFlag(flags, "key");
   const name = requireFlag(flags, "name");
+  // Keys form display identifiers (BRO-123) and are forever — enforce the
+  // identifier charset at the door, not after a thousand issues exist.
+  if (!TEAM_KEY_PATTERN.test(key)) {
+    throw new CliError(
+      `--key must be a letter followed by letters/digits (${TEAM_KEY_PATTERN}) — got "${key}"`,
+    );
+  }
   const ctx = openRepo(flags, resolveActor());
 
   const existing = resolveTeams(ctx.projection.db, key);

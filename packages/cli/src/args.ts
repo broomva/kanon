@@ -78,7 +78,8 @@ export function parseFlags(
       continue;
     }
     const next = argv[i + 1];
-    if (next === undefined || next.startsWith("--")) {
+    // `--flag ""` behaves exactly like `--flag=`: an empty value is an error.
+    if (next === undefined || next.length === 0 || next.startsWith("--")) {
       throw new CliError(`--${name} requires a value`);
     }
     setValue(name, kind, next);

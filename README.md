@@ -92,7 +92,7 @@ back to `git config user.email`, then `user@host`.
 | `kanon issue create --team BRO --title ... [--description --priority 0-4 --estimate --assignee --delegate --project --milestone --parent --label a --label b]` | create an issue; allocates the next display number and prints `BRO-1652` |
 | `kanon issue show <ref>` | issue + comments + relations |
 | `kanon issue list [--team --state --assignee --delegate --project --label --priority --parent --updated-after --updated-before --query --no-archived --order-by --order-dir --limit --offset]` | filtered listing |
-| `kanon issue ready [--team]` | unblocked backlog/unstarted work — the agent queue |
+| `kanon issue ready [--team]` | unblocked backlog/unstarted work — the agent queue. Blocked = a `blocks` relation points at the issue from a blocker that is not completed/canceled. Deliberate: an **archived-but-open blocker still blocks** (archiving hides an issue, it does not complete it) — complete/cancel the blocker or `unrelate` to unblock dependents |
 | `kanon issue update <ref> [--state <type\|name\|id> --title --description --priority --estimate --assignee --delegate --add-label --remove-label]` | field updates (per-field LWW) |
 | `kanon issue claim <ref>` | agents take the delegate seat, humans take assignee; moves to a started state |
 | `kanon issue archive <ref>` | archive |

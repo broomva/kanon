@@ -69,6 +69,24 @@ function ok(args: string[], env?: Record<string, string>): string {
   return result.stdout;
 }
 
+/** Async variant for true parallel invocations. */
+async function kanonAsync(
+  args: string[],
+  env: Record<string, string> = cliEnv(),
+): Promise<CliResult> {
+  const proc = Bun.spawn([process.execPath, CLI, ...args], {
+    env,
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const [stdout, stderr, code] = await Promise.all([
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+    proc.exited,
+  ]);
+  return { code, stdout, stderr };
+}
+
 function git(dir: string, ...args: string[]): string {
   const proc = Bun.spawnSync(["git", ...args], { cwd: dir });
   if (proc.exitCode !== 0) {
@@ -306,7 +324,161 @@ describe("full lifecycle (single clone)", () => {
     const badState = kanon(["issue", "update", "BRO-99", "--state", "Done", "--repo", repo]);
     expect(badState.code).toBe(1);
     expect(badState.stderr).toContain("no issue matching");
+
+    // `--flag=` and `--flag ""` behave identically: both hard errors.
+    const emptyInline = kanon(["issue", "create", "--team", "BRO", "--title=", "--repo", repo]);
+    expect(emptyInline.code).toBe(1);
+    expect(emptyInline.stderr).toContain("--title requires a value");
+    const emptySeparate = kanon([
+      "issue",
+      "create",
+      "--team",
+      "BRO",
+      "--title",
+      "",
+      "--repo",
+      repo,
+    ]);
+    expect(emptySeparate.code).toBe(1);
+    expect(emptySeparate.stderr).toContain("--title requires a value");
   });
+
+  test("team keys are validated against the identifier charset at create", () => {
+    const repo = tempDir();
+    ok(["init", repo, "--workspace", "acme", "--no-git"]);
+
+    for (const badKey of ["BAD KEY", "9BRO", "BRO-1", "bro_x"]) {
+      const result = kanon(["team", "create", "--key", badKey, "--name", "X", "--repo", repo]);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain("--key must be a letter followed by letters/digits");
+    }
+    ok(["team", "create", "--key", "Bro2", "--name", "OK", "--repo", repo]);
+  });
+
+  test("repeated --label refs mint ONE label (no permanent ambiguity)", () => {
+    const repo = tempDir();
+    ok(["init", repo, "--workspace", "acme", "--no-git"]);
+    ok(["team", "create", "--key", "BRO", "--name", "Broomva", "--repo", repo]);
+
+    // Same new label referenced three times (case-varied) in ONE create.
+    ok([
+      "issue",
+      "create",
+      "--team",
+      "BRO",
+      "--title",
+      "L1",
+      "--label",
+      "bug",
+      "--label",
+      "Bug",
+      "--label",
+      "bug",
+      "--repo",
+      repo,
+    ]);
+    const first = JSON.parse(ok(["issue", "show", "BRO-1", "--repo", repo, "--json"])) as {
+      issue: { labelIds: string[] };
+    };
+    expect(first.issue.labelIds.length).toBe(1);
+
+    // The label resolves (not ambiguous) for the NEXT command, same entity.
+    ok(["issue", "create", "--team", "BRO", "--title", "L2", "--label", "BUG", "--repo", repo]);
+    const second = JSON.parse(ok(["issue", "show", "BRO-2", "--repo", repo, "--json"])) as {
+      issue: { labelIds: string[] };
+    };
+    expect(second.issue.labelIds).toEqual(first.issue.labelIds);
+
+    // --add-label dedupes pending mints the same way.
+    ok(["issue", "update", "BRO-2", "--add-label", "new1", "--add-label", "New1", "--repo", repo]);
+    const updated = JSON.parse(ok(["issue", "show", "BRO-2", "--repo", repo, "--json"])) as {
+      issue: { labelIds: string[] };
+    };
+    expect(updated.issue.labelIds.length).toBe(2);
+  });
+
+  test("a failed create burns no display number", () => {
+    const repo = tempDir();
+    ok(["init", repo, "--workspace", "acme", "--no-git"]);
+    ok(["team", "create", "--key", "BRO", "--name", "Broomva", "--repo", repo]);
+    ok(["issue", "create", "--team", "BRO", "--title", "First", "--repo", repo]);
+
+    // Reference resolution fails AFTER flags parse — must not touch meta.
+    const bad = kanon([
+      "issue",
+      "create",
+      "--team",
+      "BRO",
+      "--title",
+      "x",
+      "--assignee",
+      "nobody",
+      "--repo",
+      repo,
+    ]);
+    expect(bad.code).toBe(1);
+    expect(bad.stderr).toContain("no actor matching");
+    const meta = JSON.parse(readFileSync(join(repo, "meta.json"), "utf8")) as {
+      displayCounters: Record<string, number>;
+    };
+    expect(meta.displayCounters.BRO).toBe(1); // watermark untouched
+
+    // The next successful create is contiguous: BRO-2, not BRO-3.
+    expect(ok(["issue", "create", "--team", "BRO", "--title", "Second", "--repo", repo])).toContain(
+      "BRO-2",
+    );
+  });
+});
+
+describe("same-clone concurrency", () => {
+  test("8 parallel creates: unique numbers or clean retryable errors, never double-create", async () => {
+    const repo = tempDir();
+    ok(["init", repo, "--workspace", "acme", "--no-git"]);
+    ok(["team", "create", "--key", "BRO", "--name", "Broomva", "--repo", repo]);
+
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        kanonAsync([
+          "issue",
+          "create",
+          "--team",
+          "BRO",
+          "--title",
+          `conc-${i}`,
+          "--repo",
+          repo,
+          "--json",
+        ]),
+      ),
+    );
+    const succeeded = results.filter((result) => result.code === 0);
+    const failed = results.filter((result) => result.code !== 0);
+
+    // Failures (if any) must be clean retryable errors — no raw stack traces.
+    for (const failure of failed) {
+      expect(failure.stderr).toContain("error:");
+      expect(failure.stderr).not.toMatch(/\n\s+at /);
+    }
+
+    // Every success allocated a UNIQUE number, and the log agrees exactly:
+    // one issue per success — a retrying agent never double-creates.
+    const numbers = succeeded.map(
+      (result) => (JSON.parse(result.stdout) as { number: number }).number,
+    );
+    expect(new Set(numbers).size).toBe(numbers.length);
+    const issues = JSON.parse(ok(["issue", "list", "--repo", repo, "--json"])) as {
+      identifier: string;
+    }[];
+    expect(issues.length).toBe(succeeded.length);
+    expect(new Set(issues.map((issue) => issue.identifier)).size).toBe(issues.length);
+
+    const health = JSON.parse(ok(["doctor", "--repo", repo, "--json"])) as { ok: boolean };
+    expect(health.ok).toBe(true);
+    expect(ok(["validate", repo])).toContain("ok:");
+
+    // With locked allocation + busy_timeout, all eight succeed outright.
+    expect(succeeded.length).toBe(8);
+  }, 60_000);
 });
 
 describe("display numbering", () => {

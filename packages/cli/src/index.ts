@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * kanon — CLI for the agent-native work tracker.
  *
@@ -12,6 +13,7 @@
  * config user.email → user@host.
  */
 
+import { SQLiteError } from "bun:sqlite";
 import { resolve } from "node:path";
 import { resolveActor } from "./actor";
 import { CliError, flagBool, parseFlags, requireFlag } from "./args";
@@ -193,6 +195,17 @@ try {
 } catch (error) {
   if (error instanceof CliError) {
     console.error(`error: ${error.message}`);
+    process.exit(1);
+  }
+  if (error instanceof SQLiteError) {
+    // The cache, not the log: state.db is disposable and every append is
+    // durable before any projection write happens. No stack trace — this is
+    // a retryable condition, not a crash.
+    console.error(
+      `error: the projection cache is busy or unavailable (${error.message}). ` +
+        "The event log is unaffected — retry the command; if it persists, delete " +
+        "state.db in the data repo (it rebuilds from the log).",
+    );
     process.exit(1);
   }
   throw error;

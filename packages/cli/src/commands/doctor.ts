@@ -13,7 +13,7 @@
 
 import { resolveActor } from "../actor";
 import { flagBool, parseFlags } from "../args";
-import { allocateDisplayNumber, openRepo, readMeta, writeEvents, writeMeta } from "../context";
+import { allocateAndAppend, openRepo, readMeta, withMetaLock, writeMeta } from "../context";
 import { emit } from "../output";
 
 interface DuplicateFix {
@@ -62,10 +62,10 @@ export function doctor(argv: string[]): void {
     const [kept, ...later] = rows;
     if (kept === undefined) continue;
     for (const row of later) {
-      // allocate → update event → refresh, so the next allocation sees it.
-      const newNumber = allocateDisplayNumber(ctx, group.team_id, key);
-      writeEvents(ctx, [
-        { op: "update", model: "issue", modelId: row.id, data: { number: newNumber } },
+      // Locked allocate → update event → refresh, so the next allocation
+      // sees it and a concurrent `issue create` cannot race the watermark.
+      const { number: newNumber } = allocateAndAppend(ctx, group.team_id, key, (allocated) => [
+        { op: "update", model: "issue", modelId: row.id, data: { number: allocated } },
       ]);
       duplicates.push({
         identifier: `${key}-${group.number}`,
@@ -77,33 +77,37 @@ export function doctor(argv: string[]): void {
   }
 
   // -- watermark drift (after duplicate fixes) ---------------------------------
-  const meta = readMeta(ctx.dir);
-  const counters = meta.displayCounters ?? {};
-  const teams = db
-    .query<{ id: string; key: string | null }, []>(
-      "SELECT id, key FROM teams WHERE key IS NOT NULL ORDER BY key",
-    )
-    .all();
-  let metaChanged = false;
-  for (const team of teams) {
-    if (team.key === null) continue;
-    const row = db
-      .query<{ max: number | null }, [string]>(
-        "SELECT MAX(number) AS max FROM issues WHERE team_id = ?",
+  // Locked: the repair is a read-modify-write of the same watermark file
+  // concurrent `issue create` processes are allocating from.
+  withMetaLock(ctx.dir, () => {
+    const meta = readMeta(ctx.dir);
+    const counters = meta.displayCounters ?? {};
+    const teams = db
+      .query<{ id: string; key: string | null }, []>(
+        "SELECT id, key FROM teams WHERE key IS NOT NULL ORDER BY key",
       )
-      .get(team.id);
-    const max = row?.max ?? 0;
-    const current = counters[team.key] ?? 0;
-    if (current < max) {
-      watermarks.push({ team: team.key, from: current, to: max });
-      counters[team.key] = max;
-      metaChanged = true;
+      .all();
+    let metaChanged = false;
+    for (const team of teams) {
+      if (team.key === null) continue;
+      const row = db
+        .query<{ max: number | null }, [string]>(
+          "SELECT MAX(number) AS max FROM issues WHERE team_id = ?",
+        )
+        .get(team.id);
+      const max = row?.max ?? 0;
+      const current = counters[team.key] ?? 0;
+      if (current < max) {
+        watermarks.push({ team: team.key, from: current, to: max });
+        counters[team.key] = max;
+        metaChanged = true;
+      }
     }
-  }
-  if (metaChanged) {
-    meta.displayCounters = counters;
-    writeMeta(ctx.dir, meta);
-  }
+    if (metaChanged) {
+      meta.displayCounters = counters;
+      writeMeta(ctx.dir, meta);
+    }
+  });
 
   const ok = duplicates.length === 0 && watermarks.length === 0;
   emit(flagBool(flags, "json"), { ok, duplicates, watermarks }, () => {
