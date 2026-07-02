@@ -32,8 +32,14 @@ export function loadLog(dataRepoDir: string): MergeReport {
     segments = readdirSync(eventsDir)
       .filter((name) => name.endsWith(".jsonl"))
       .sort();
-  } catch {
-    return unionMergeWithReport();
+  } catch (error) {
+    // Only a genuinely absent events/ dir means "empty log". Permission
+    // errors, ENOTDIR, transient fs failures must NOT masquerade as empty —
+    // refresh() would happily rebuild an empty projection over real data.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return unionMergeWithReport();
+    }
+    throw error;
   }
   const streams: KanonEvent[][] = [];
   for (const segment of segments) {

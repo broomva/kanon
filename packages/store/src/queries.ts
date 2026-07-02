@@ -658,7 +658,8 @@ export function getIssue(db: Database, ref: string): IssueRecord | undefined {
   const row = db
     .query<IssueRow, [string, number]>(
       "SELECT i.* FROM issues i JOIN teams t ON t.id = i.team_id " +
-        "WHERE UPPER(t.key) = UPPER(?) AND i.number = ? ORDER BY i.deleted, i.id LIMIT 1",
+        "WHERE UPPER(t.key) = UPPER(?) AND i.number = ? AND i.deleted = 0 " +
+        "ORDER BY i.id LIMIT 1",
     )
     .get(key, Number(numberText));
   return row === null ? undefined : issueRecord(db, row);
