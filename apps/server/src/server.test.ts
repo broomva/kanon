@@ -29,22 +29,31 @@ describe("auth", () => {
     expect(typeof body.head).toBe("string");
   });
 
-  test("missing key → 401", async () => {
+  test("missing key → 404 (resource-not-found shape)", async () => {
     const { url } = boot();
     const response = await fetch(`${url}/v1/issues`);
-    expect(response.status).toBe(401);
-    expect(((await response.json()) as { error: string }).error).toBe("unauthorized");
+    expect(response.status).toBe(404);
+    expect(((await response.json()) as { error: string }).error).toBe("not found");
   });
 
-  test("wrong key → 401 without workspace disclosure", async () => {
+  test("wrong key → 404, indistinguishable from a nonexistent route", async () => {
     const { url } = boot();
-    const response = await fetch(`${url}/v1/issues`, {
+    const denied = await fetch(`${url}/v1/issues`, {
       headers: { authorization: "Bearer some-other-workspaces-key" },
     });
-    expect(response.status).toBe(401);
-    const text = await response.text();
+    expect(denied.status).toBe(404);
+    const text = await denied.text();
+    // No workspace disclosure — a key valid elsewhere learns nothing.
     expect(text).not.toContain("test");
-    expect(JSON.parse(text)).toEqual({ error: "unauthorized" });
+    expect(JSON.parse(text)).toEqual({ error: "not found" });
+
+    // Byte-identical to a genuinely nonexistent /v1 route: the denial reveals
+    // nothing about whether the resource — or the workspace — exists here.
+    const missing = await fetch(`${url}/v1/does-not-exist`, {
+      headers: { authorization: "Bearer some-other-workspaces-key" },
+    });
+    expect(missing.status).toBe(404);
+    expect(await missing.text()).toBe(text);
   });
 });
 

@@ -5,8 +5,10 @@
  *
  * Tenancy: the workspace is derived from the data repo's meta.json —
  * requests NEVER choose a workspace. One server per workspace data repo.
- * An unknown bearer key is a plain 401 with no workspace disclosure: a key
- * bound to a different workspace's server simply does not exist here.
+ * Any /v1 request without a key valid for THIS workspace gets the SAME 404
+ * as a nonexistent route (resource-not-found shape): a key valid on another
+ * workspace's server learns nothing — not even that this is a Kanon server
+ * for that workspace (BRO-1648 AC#2).
  */
 
 import { type EventActor, type KanonEvent, ulid } from "@kanon/core";
@@ -66,14 +68,20 @@ export function createApp(service: KanonService, config: ServerConfig): Hono<App
   );
 
   // -- bearer auth for everything under /v1 ------------------------------------
+  // Non-disclosure by design (BRO-1648 AC#2): a missing key, an unknown key,
+  // and a key valid on ANOTHER workspace's server all collapse to the SAME
+  // 404 as a nonexistent route (`c.notFound()` → the app's notFound handler).
+  // Protected routes are therefore invisible — the denial is byte-identical
+  // to "no such resource", so a caller learns nothing (not even that this is
+  // a Kanon server for this workspace). One denial response is what makes the
+  // non-disclosure airtight; a 401 would confirm the server + auth surface.
   app.use("/v1/*", async (c, next) => {
     const header = c.req.header("authorization");
-    const token =
-      header !== undefined && header.startsWith("Bearer ") ? header.slice(7).trim() : undefined;
+    const token = header?.startsWith("Bearer ") ? header.slice(7).trim() : undefined;
     const principal =
       token === undefined || token.length === 0 ? undefined : config.apiKeys.get(token);
     if (principal === undefined) {
-      return c.json({ error: "unauthorized" }, 401);
+      return c.notFound();
     }
     c.set("actor", principalActor(principal, bootId));
     await next();

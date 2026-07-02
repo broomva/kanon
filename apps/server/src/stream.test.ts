@@ -54,10 +54,10 @@ class SseReader {
 }
 
 describe("SSE", () => {
-  test("requires auth", async () => {
+  test("requires auth (404-shaped denial)", async () => {
     const { url } = boot();
     const response = await fetch(`${url}/v1/stream`);
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(404);
   });
 
   test("receives an ingested event", async () => {

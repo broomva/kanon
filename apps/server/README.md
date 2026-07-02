@@ -31,9 +31,11 @@ bun apps/server/src/index.ts
 **One server per workspace data repo.** `KANON_DATA_DIR` points at a git
 clone the server OWNS — the workspace is derived from that clone's
 `meta.json`, and requests never choose a workspace. A bearer key bound to a
-different workspace's server simply does not exist here: an unknown key is a
-plain `401 {"error":"unauthorized"}` with no workspace disclosure. Run N
-workspaces as N deployments with N volumes.
+different workspace's server simply does not exist here: any `/v1` request
+without a key valid for THIS workspace gets the same `404 {"error":"not
+found"}` as a nonexistent route, so a key valid elsewhere learns nothing —
+not even that this is a Kanon server for that workspace. Run N workspaces as
+N deployments with N volumes.
 
 ## Config (env)
 
@@ -55,12 +57,18 @@ optional `sessionPrefix` stamps `sessionId: "<prefix>-<boot ulid>"` so runs
 of a given daemon are distinguishable in the log. Rotate by editing the env
 and restarting.
 
+A missing, unknown, or wrong-workspace key is denied with a `404 {"error":
+"not found"}` — byte-identical to a nonexistent route — never a `401`. This
+resource-not-found shape keeps `/v1` invisible to anyone without a valid key,
+so a key valid on another workspace's server discloses nothing.
+
 ## API
 
 All bodies and responses are JSON. Errors are `{"error": "..."}` with:
-`400` malformed input / unresolvable reference · `401` unauthorized ·
-`404` missing resource · `409` conflict (duplicate event id, taken team key)
-· `422` workspace mismatch / unallocatable · `503` allocation-lock timeout.
+`400` malformed input / unresolvable reference · `404` missing resource, OR
+an unauthenticated `/v1` request (resource-not-found shape — see Auth model)
+· `409` conflict (duplicate event id, taken team key) · `422` workspace
+mismatch / unallocatable · `503` allocation-lock timeout.
 
 | Method + path | Auth | What it does |
 |---|---|---|
