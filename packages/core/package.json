@@ -1,0 +1,14 @@
+{
+  "name": "@kanon/core",
+  "version": "0.1.0",
+  "description": "Kanon event model: ULIDs, attributed append-only events, validation",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "check-types": "tsc --noEmit"
+  }
+}

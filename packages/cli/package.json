@@ -1,0 +1,18 @@
+{
+  "name": "@kanon/cli",
+  "version": "0.1.0",
+  "description": "kanon — CLI for the agent-native work tracker",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "kanon": "./src/index.ts"
+  },
+  "dependencies": {
+    "@kanon/core": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test",
+    "check-types": "tsc --noEmit",
+    "build": "bun build src/index.ts --compile --outfile dist/kanon"
+  }
+}

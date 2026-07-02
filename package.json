@@ -1,0 +1,26 @@
+{
+  "name": "kanon",
+  "private": true,
+  "description": "Agent-native work tracker — log-canonical, git-replicated system of record",
+  "license": "MIT",
+  "packageManager": "bun@1.3.14",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "tools/*"
+  ],
+  "scripts": {
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "check-types": "turbo run check-types",
+    "test": "turbo run test",
+    "build": "turbo run build",
+    "ci": "bun run lint && bun run check-types && bun run test && bun run build"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.3.0",
+    "@types/bun": "^1.3.0",
+    "turbo": "^2.5.0",
+    "typescript": "^5.9.0"
+  }
+}
