@@ -63,7 +63,13 @@ export function initDataRepo(options: InitOptions): InitResult {
   writeFileSync(join(dir, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`);
 
   // Derived caches never enter the log's git history.
-  writeFileSync(join(dir, ".gitignore"), "state.db\n*.sqlite*\n");
+  writeFileSync(join(dir, ".gitignore"), "state.db*\n*.sqlite*\n");
+
+  // Concurrent appends to the same monthly segment must UNION on merge, not
+  // conflict: replicas each append lines and the ULID sort on load restores
+  // the canonical order. This is what makes `kanon sync` (pull --rebase)
+  // conflict-free for the log itself.
+  writeFileSync(join(dir, ".gitattributes"), "events/*.jsonl merge=union\n");
 
   const genesis = createEvent({
     workspace,
