@@ -247,3 +247,12 @@ export function parseEventLine(line: string): KanonEvent {
 export function segmentName(ts: string): string {
   return `${ts.slice(0, 7)}.jsonl`;
 }
+
+// ---------------------------------------------------------------------------
+// M1 — merge, replay, snapshots (BRO-1644)
+// ---------------------------------------------------------------------------
+
+export * from "./merge";
+export * from "./replay";
+export * from "./snapshot";
+export * from "./stable";
