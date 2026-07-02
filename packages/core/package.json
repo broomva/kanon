@@ -10,5 +10,8 @@
   "scripts": {
     "test": "bun test",
     "check-types": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "fast-check": "^4.5.0"
   }
 }

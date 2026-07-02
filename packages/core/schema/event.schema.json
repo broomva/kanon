@@ -65,7 +65,7 @@
     },
     "data": {
       "type": "object",
-      "description": "Changed fields (op=update) or full initial state (op=create)"
+      "description": "Changed fields (op=update) or full initial state (op=create). Values are plain JSON only — nested objects/arrays/strings/finite numbers/booleans/null. Producers must not rely on serializer coercion (dates go on the wire as ISO-8601 strings)."
     },
     "v": {
       "const": 1,

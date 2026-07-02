@@ -136,6 +136,56 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/**
+ * Deep JSON-safety check for event `data`. The in-memory event must equal
+ * its JSONL wire form exactly, or replicas that read the log diverge from
+ * the producer's in-memory state. Allowed: plain objects (prototype
+ * Object.prototype or null), arrays, strings, finite numbers, booleans,
+ * null. Rejected: undefined property values, NaN/Infinity, bigint,
+ * functions, symbols, and non-plain objects (Date, Map, class instances —
+ * anything JSON.stringify would coerce or drop).
+ */
+function validateJsonValue(value: unknown, path: string, errors: string[]): void {
+  if (value === null) {
+    return;
+  }
+  switch (typeof value) {
+    case "string":
+    case "boolean":
+      return;
+    case "number":
+      if (!Number.isFinite(value)) {
+        errors.push(`${path} must be a finite number (NaN/Infinity are not JSON)`);
+      }
+      return;
+    case "undefined":
+      errors.push(`${path} must not be undefined (JSON.stringify would drop or null it)`);
+      return;
+    case "object":
+      break;
+    default:
+      // bigint, function, symbol
+      errors.push(`${path} must be JSON-safe (found ${typeof value})`);
+      return;
+  }
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      validateJsonValue(value[i], `${path}[${i}]`, errors);
+    }
+    return;
+  }
+  const proto = Object.getPrototypeOf(value);
+  if (proto !== Object.prototype && proto !== null) {
+    errors.push(
+      `${path} must be a plain JSON object (Dates, Maps, class instances are not wire-safe)`,
+    );
+    return;
+  }
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    validateJsonValue(entry, `${path}.${key}`, errors);
+  }
+}
+
 export function validateEvent(value: unknown): ValidationResult {
   const errors: string[] = [];
   if (!isPlainObject(value)) {
@@ -183,6 +233,8 @@ export function validateEvent(value: unknown): ValidationResult {
   }
   if (!isPlainObject(data)) {
     errors.push("data must be an object");
+  } else {
+    validateJsonValue(data, "data", errors);
   }
   if (v !== SCHEMA_VERSION) {
     errors.push(`v must be ${SCHEMA_VERSION}`);
@@ -247,3 +299,12 @@ export function parseEventLine(line: string): KanonEvent {
 export function segmentName(ts: string): string {
   return `${ts.slice(0, 7)}.jsonl`;
 }
+
+// ---------------------------------------------------------------------------
+// M1 — merge, replay, snapshots (BRO-1644)
+// ---------------------------------------------------------------------------
+
+export * from "./merge";
+export * from "./replay";
+export * from "./snapshot";
+export * from "./stable";
