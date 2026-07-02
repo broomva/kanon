@@ -1,34 +1,52 @@
 import { describe, expect, test } from "bun:test";
 import fc from "fast-check";
-import type { KanonEvent, Model, Op } from "./index";
+import { type KanonEvent, type Model, type Op, parseEventLine, serializeEvent } from "./index";
 import { unionMerge } from "./merge";
 import {
   applyEvent,
   createWorldState,
   DELETED_FIELD,
   fieldVersionKey,
+  ReplayDivergenceError,
+  ReplayOrderError,
   replay,
   replayMerged,
 } from "./replay";
 import { stateChecksum } from "./snapshot";
 import { entityId, makeEvent, mustGetEntity } from "./testing";
 
-const OP_POOL = ["create", "update", "archive", "unarchive", "delete"] as const satisfies Op[];
-const MODEL_POOL = ["issue", "project", "label"] as const satisfies Model[];
+const OP_POOL = [
+  "create",
+  "update",
+  "archive",
+  "unarchive",
+  "delete",
+  "relate",
+  "unrelate",
+] as const satisfies Op[];
+const MODEL_POOL = ["issue", "project", "label", "issue_relation"] as const satisfies Model[];
 const FIELD_POOL = ["title", "state", "priority", "estimate"] as const;
 
-const arbValue = fc.oneof(
-  fc.string({ maxLength: 8 }),
+const arbScalar = fc.oneof(
+  fc.string({ maxLength: 6 }),
   fc.integer(),
   fc.boolean(),
   fc.constant(null),
+);
+// G3: nested plain objects/arrays alongside scalars.
+const arbValue = fc.oneof(
+  arbScalar,
+  fc.array(arbScalar, { maxLength: 3 }),
+  fc.dictionary(fc.constantFrom("x", "y"), arbScalar, { maxKeys: 2 }),
 );
 const arbData = fc.dictionary(fc.constantFrom(...FIELD_POOL), arbValue, { maxKeys: 3 });
 
 /**
  * Random event history over a shared pool of entity ids across models.
  * Every event gets a distinct seq, so ids are unique and seq order is ULID
- * order — fully deterministic from the fast-check run.
+ * order — fully deterministic from the fast-check run. Timestamps are
+ * decoupled from ids (small colliding tsSeed pool, G2) so id-vs-ts ordering
+ * bugs cannot hide behind aligned clocks.
  */
 const arbEvents: fc.Arbitrary<KanonEvent[]> = fc
   .array(
@@ -37,6 +55,7 @@ const arbEvents: fc.Arbitrary<KanonEvent[]> = fc
       model: fc.constantFrom(...MODEL_POOL),
       entity: fc.integer({ min: 0, max: 5 }),
       data: arbData,
+      tsSeed: fc.integer({ min: 0, max: 15 }),
     }),
     { minLength: 1, maxLength: 40 },
   )
@@ -94,21 +113,74 @@ describe("replay properties", () => {
     );
   });
 
+  test("PROPERTY: wire round-trip — JSONL serialize/parse preserves the replay checksum (G3)", () => {
+    fc.assert(
+      fc.property(arbEvents, (events) => {
+        const sorted = unionMerge(events);
+        const wire = sorted.map((event) => parseEventLine(serializeEvent(event)));
+        expect(stateChecksum(replay(wire))).toBe(stateChecksum(replay(sorted)));
+      }),
+      { numRuns: 200 },
+    );
+  });
+
+  test("PROPERTY: incremental resume — pure suffixes and matching prefixes succeed; grown/changed prefixes throw (G4)", () => {
+    const arb = arbEvents.chain((events) =>
+      fc.record({
+        events: fc.constant(events),
+        mask: fc.array(fc.boolean(), { minLength: events.length, maxLength: events.length }),
+      }),
+    );
+    fc.assert(
+      fc.property(arb, ({ events, mask }) => {
+        const sorted = unionMerge(events);
+        const baseline = stateChecksum(replay(sorted));
+
+        // Pure suffix extension from a snapshot point always succeeds.
+        const k = Math.floor(sorted.length / 2);
+        const head = replay(sorted.slice(0, k));
+        replay(sorted.slice(k), head);
+        expect(stateChecksum(head)).toBe(baseline);
+
+        // Resume against the FULL merged log from a random applied subset:
+        // sound iff the subset is exactly the log's prefix up to its cursor.
+        const subset = sorted.filter((_, i) => mask[i] === true);
+        if (subset.length === 0) {
+          return;
+        }
+        const state = replay(subset);
+        const cursor = subset[subset.length - 1]?.id ?? "";
+        const isPrefix = sorted.filter((e) => e.id <= cursor).length === subset.length;
+        if (isPrefix) {
+          replay(sorted, state);
+          expect(stateChecksum(state)).toBe(baseline);
+        } else {
+          // The log contains events below the cursor that were never
+          // applied — silent skipping would lose them, so replay must fail.
+          expect(() => replay(sorted, state)).toThrow(ReplayDivergenceError);
+        }
+      }),
+      { numRuns: 200 },
+    );
+  });
+
   test("PROPERTY: per-field LWW — higher event id wins regardless of arrival order; other fields survive", () => {
     const arb = fc.record({
       low: fc.string({ maxLength: 8 }),
       high: fc.string({ maxLength: 8 }),
       priority: fc.integer(),
       higherFirst: fc.boolean(),
+      tsSeeds: fc.array(fc.integer({ min: 0, max: 15 }), { minLength: 3, maxLength: 3 }),
     });
     fc.assert(
-      fc.property(arb, ({ low, high, priority, higherFirst }) => {
+      fc.property(arb, ({ low, high, priority, higherFirst, tsSeeds }) => {
         const create = makeEvent({
           seq: 1,
           op: "create",
           model: "issue",
           entity: 0,
           data: { title: "initial", state: "backlog" },
+          tsSeed: tsSeeds[0] ?? 0,
         });
         // Two clones update concurrently: lower id writes title+state,
         // higher id writes title+priority.
@@ -118,6 +190,7 @@ describe("replay properties", () => {
           model: "issue",
           entity: 0,
           data: { title: low, state: "started" },
+          tsSeed: tsSeeds[1] ?? 0,
         });
         const highUpdate = makeEvent({
           seq: 3,
@@ -125,6 +198,7 @@ describe("replay properties", () => {
           model: "issue",
           entity: 0,
           data: { title: high, priority },
+          tsSeed: tsSeeds[2] ?? 0,
         });
 
         // Through the merge path, arrival order is the stream arrangement.
@@ -155,6 +229,46 @@ describe("replay properties", () => {
       }),
       { numRuns: 200 },
     );
+  });
+});
+
+describe("resume soundness (fix #1)", () => {
+  test("REGRESSION: a log grown below the cursor throws instead of silently dropping events", () => {
+    const e1 = makeEvent({ seq: 1, op: "create", model: "issue", entity: 0, data: { t: "a" } });
+    const e5 = makeEvent({ seq: 5, op: "create", model: "issue", entity: 1, data: { t: "b" } });
+    const state = replay([e5]);
+    // The exact reviewer repro: merge later reveals e1 (id < cursor).
+    expect(() => replay(unionMerge([e1, e5]), state)).toThrow(ReplayDivergenceError);
+    // A stream that is neither a pure suffix nor the applied history fails
+    // even when it ends below the cursor.
+    expect(() => replay([e1], state)).toThrow(ReplayDivergenceError);
+    // The failed resume did not corrupt the state: e5 alone is still applied.
+    expect(state.appliedCount).toBe(1);
+    expect(stateChecksum(state)).toBe(stateChecksum(replay([e5])));
+  });
+
+  test("resume with the full unchanged log verifies the prefix and applies only the suffix", () => {
+    const events = [
+      makeEvent({ seq: 1, op: "create", model: "issue", entity: 0, data: { title: "one" } }),
+      makeEvent({ seq: 2, op: "update", model: "issue", entity: 0, data: { title: "two" } }),
+      makeEvent({ seq: 3, op: "update", model: "issue", entity: 0, data: { state: "done" } }),
+    ];
+    const state = replay(events.slice(0, 2));
+    expect(state.cursor).toBe(events[1]?.id ?? "");
+    replay(events, state); // prefix matches the fingerprint; only seq 3 applies
+    const entity = mustGetEntity(state, "issue", entityId(0));
+    expect(entity.fields).toEqual({ title: "two", state: "done" });
+    expect(state.cursor).toBe(events[2]?.id ?? "");
+    expect(state.appliedCount).toBe(3);
+  });
+
+  test("unsorted or duplicated input throws ReplayOrderError instead of skipping (fix #6)", () => {
+    const e1 = makeEvent({ seq: 1, op: "create", model: "issue", entity: 0, data: {} });
+    const e2 = makeEvent({ seq: 2, op: "update", model: "issue", entity: 0, data: { t: 1 } });
+    expect(() => replay([e2, e1])).toThrow(ReplayOrderError); // fresh, out of order
+    expect(() => replay([e1, e1])).toThrow(ReplayOrderError); // fresh, duplicate
+    const state = replay([e1]);
+    expect(() => replay([e2, e2], state)).toThrow(ReplayOrderError); // resumed, duplicate
   });
 });
 
@@ -268,18 +382,20 @@ describe("relations (relate / unrelate)", () => {
 });
 
 describe("replay mechanics", () => {
-  test("skips events at or below the cursor (sorted-input contract)", () => {
-    const events = [
-      makeEvent({ seq: 1, op: "create", model: "issue", entity: 0, data: { title: "one" } }),
-      makeEvent({ seq: 2, op: "update", model: "issue", entity: 0, data: { title: "two" } }),
-      makeEvent({ seq: 3, op: "update", model: "issue", entity: 0, data: { state: "done" } }),
-    ];
-    const state = replay(events.slice(0, 2));
-    expect(state.cursor).toBe(events[1]?.id ?? "");
-    replay(events, state); // first two are <= cursor: skipped, not re-applied
-    const entity = mustGetEntity(state, "issue", entityId(0));
-    expect(entity.fields).toEqual({ title: "two", state: "done" });
-    expect(state.cursor).toBe(events[2]?.id ?? "");
+  test("createdAt is LWW-MIN: the smallest introducing event id wins in any order (fix #5)", () => {
+    // ts is deliberately inverted relative to id order: the earlier-id event
+    // carries the LATER wall-clock ts, proving the register keys on id.
+    const early = makeEvent({ seq: 1, op: "create", model: "issue", entity: 0, tsSeed: 9 });
+    const late = makeEvent({ seq: 2, op: "update", model: "issue", entity: 0, tsSeed: 1 });
+    const forward = createWorldState();
+    applyEvent(forward, early);
+    applyEvent(forward, late);
+    const reverse = createWorldState();
+    applyEvent(reverse, late);
+    applyEvent(reverse, early);
+    expect(mustGetEntity(forward, "issue", entityId(0)).createdAt).toBe(early.ts);
+    expect(mustGetEntity(reverse, "issue", entityId(0)).createdAt).toBe(early.ts);
+    expect(stateChecksum(reverse)).toBe(stateChecksum(forward));
   });
 
   test("entities referenced before their create still materialize (partial history)", () => {
@@ -313,7 +429,7 @@ describe("replay mechanics", () => {
         op: "create",
         model: "issue",
         entity: 0,
-        data: { title: "real", __deleted: true, __archived: "bogus" },
+        data: { title: "real", __deleted: true, __archived: "bogus", __created: "bogus" },
       }),
     ]);
     const entity = mustGetEntity(state, "issue", entityId(0));

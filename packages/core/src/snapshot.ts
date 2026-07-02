@@ -2,11 +2,18 @@
  * Snapshots — plain-JSON projections of a WorldState.
  *
  * A snapshot is the resumption point for replay: restore it, then replay the
- * events after `cursor`. Snapshots are canonical-form JSON — every object's
- * keys/entries are emitted in sorted order (models, entity ids, entity
- * fields, LWW registers) and entity records use a fixed property order, so
- * two identical states always serialize to identical bytes. That property is
- * what makes `stateChecksum` a valid convergence probe.
+ * events after `cursor` (a pure suffix, or the full merged log — replay
+ * verifies the prefix against the applied-set fingerprint carried here).
+ * Snapshots are canonical-form JSON — every object's keys/entries are
+ * emitted in sorted order (models, entity ids, entity fields, LWW registers)
+ * and entity records use a fixed property order, so two identical states
+ * always serialize to identical bytes. That property is what makes
+ * `stateChecksum` a valid convergence probe.
+ *
+ * Versioning note: the applied-set fingerprint (`appliedCount`,
+ * `appliedHash`) was added to v1 in place rather than bumping to v2 — the
+ * format is pre-release (nothing has ever persisted a fingerprint-less
+ * snapshot), and `restoreSnapshot` validates the extended shape explicitly.
  */
 
 import type { Model } from "./index";
@@ -19,6 +26,10 @@ export interface SnapshotV1 {
   v: typeof SNAPSHOT_VERSION;
   /** Replay cursor — highest event id folded into this state. */
   cursor: string | null;
+  /** Number of events applied to this state. */
+  appliedCount: number;
+  /** Order-independent XOR-fold fingerprint of applied event ids (16-hex). */
+  appliedHash: string;
   /** model -> entity id -> entity; all keys sorted. Keys are `Model` values. */
   entities: Record<string, Record<string, Entity>>;
   /** LWW registers (`"${model} ${id} ${field}"` -> event id); keys sorted. */
@@ -71,13 +82,31 @@ export function takeSnapshot(state: WorldState): SnapshotV1 {
       fieldVersions[key] = version;
     }
   }
-  return { v: SNAPSHOT_VERSION, cursor: state.cursor, entities, fieldVersions };
+  return {
+    v: SNAPSHOT_VERSION,
+    cursor: state.cursor,
+    appliedCount: state.appliedCount,
+    appliedHash: state.appliedHash,
+    entities,
+    fieldVersions,
+  };
 }
 
-/** Rebuild a live WorldState from a snapshot. Throws on unknown versions. */
+const APPLIED_HASH_PATTERN = /^[0-9a-f]{16}$/;
+
+/**
+ * Rebuild a live WorldState from a snapshot. Throws on unknown versions and
+ * on snapshots missing the applied-set fingerprint (malformed input — e.g.
+ * JSON from a source that predates or mangles the v1 shape).
+ */
 export function restoreSnapshot(snap: SnapshotV1): WorldState {
   if (snap.v !== SNAPSHOT_VERSION) {
     throw new Error(`unsupported snapshot version: ${String((snap as { v: unknown }).v)}`);
+  }
+  if (typeof snap.appliedCount !== "number" || !APPLIED_HASH_PATTERN.test(snap.appliedHash)) {
+    throw new Error(
+      "malformed snapshot: missing applied-set fingerprint (appliedCount/appliedHash)",
+    );
   }
   const entities = new Map<Model, Map<string, Entity>>();
   for (const [model, byIdRecord] of Object.entries(snap.entities)) {
@@ -92,6 +121,8 @@ export function restoreSnapshot(snap: SnapshotV1): WorldState {
     entities,
     fieldVersions: new Map(Object.entries(snap.fieldVersions)),
     cursor: snap.cursor,
+    appliedCount: snap.appliedCount,
+    appliedHash: snap.appliedHash,
   };
 }
 

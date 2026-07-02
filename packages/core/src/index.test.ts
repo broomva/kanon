@@ -87,6 +87,43 @@ describe("createEvent / validateEvent", () => {
   });
 });
 
+describe("data JSON-safety", () => {
+  const base = () =>
+    createEvent({ workspace: "broomva", actor, op: "update", model: "issue", data: {} });
+
+  test("rejects values that would diverge from their JSONL wire form", () => {
+    const event = base();
+    expect(validateEvent({ ...event, data: { a: undefined } }).ok).toBe(false);
+    expect(validateEvent({ ...event, data: { a: Number.NaN } }).ok).toBe(false);
+    expect(validateEvent({ ...event, data: { a: Number.POSITIVE_INFINITY } }).ok).toBe(false);
+    expect(validateEvent({ ...event, data: { a: 1n } }).ok).toBe(false);
+    expect(validateEvent({ ...event, data: { a: new Date() } }).ok).toBe(false);
+    expect(validateEvent({ ...event, data: { a: () => 1 } }).ok).toBe(false);
+    // ...at any depth, including inside arrays and nested objects.
+    expect(validateEvent({ ...event, data: { a: [undefined] } }).ok).toBe(false);
+    expect(validateEvent({ ...event, data: { a: { b: new Map() } } }).ok).toBe(false);
+    expect(validateEvent({ ...event, data: { a: [{ b: Number.NaN }] } }).ok).toBe(false);
+    // ...and the data object itself must be plain.
+    expect(validateEvent({ ...event, data: new Date() }).ok).toBe(false);
+  });
+
+  test("accepts nested plain JSON", () => {
+    const event = base();
+    const data = {
+      title: "ok",
+      estimate: 0.5,
+      done: false,
+      labels: ["a", "b", null],
+      nested: { deep: { list: [1, 2, { x: true }] } },
+    };
+    expect(validateEvent({ ...event, data }).ok).toBe(true);
+    // null-prototype objects are plain JSON carriers too.
+    const nullProto = Object.create(null) as Record<string, unknown>;
+    nullProto.a = 1;
+    expect(validateEvent({ ...event, data: { holder: nullProto } }).ok).toBe(true);
+  });
+});
+
 describe("schema agreement", () => {
   test("hand validator enforces every schema-required field", () => {
     const required = schema.required as string[];

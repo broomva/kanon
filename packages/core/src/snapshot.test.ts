@@ -2,12 +2,20 @@ import { describe, expect, test } from "bun:test";
 import fc from "fast-check";
 import type { KanonEvent, Op } from "./index";
 import { unionMerge } from "./merge";
-import { replay, replayMerged } from "./replay";
+import { EMPTY_APPLIED_HASH, replay, replayMerged } from "./replay";
 import { restoreSnapshot, SNAPSHOT_VERSION, stateChecksum, takeSnapshot } from "./snapshot";
 import { fnv1a64, stableStringify } from "./stable";
 import { entityId, makeEvent, mustGetEntity } from "./testing";
 
-const OP_POOL = ["create", "update", "archive", "unarchive", "delete"] as const satisfies Op[];
+const OP_POOL = [
+  "create",
+  "update",
+  "archive",
+  "unarchive",
+  "delete",
+  "relate",
+  "unrelate",
+] as const satisfies Op[];
 
 const arbEvents: fc.Arbitrary<KanonEvent[]> = fc
   .array(
@@ -15,6 +23,7 @@ const arbEvents: fc.Arbitrary<KanonEvent[]> = fc
       op: fc.constantFrom(...OP_POOL),
       entity: fc.integer({ min: 0, max: 5 }),
       title: fc.string({ maxLength: 8 }),
+      tsSeed: fc.integer({ min: 0, max: 15 }),
     }),
     { minLength: 1, maxLength: 40 },
   )
@@ -26,6 +35,7 @@ const arbEvents: fc.Arbitrary<KanonEvent[]> = fc
         model: "issue",
         entity: spec.entity,
         data: { title: spec.title },
+        tsSeed: spec.tsSeed,
       }),
     ),
   );
@@ -80,6 +90,8 @@ describe("snapshot properties", () => {
         const revived = restoreSnapshot(JSON.parse(JSON.stringify(takeSnapshot(state))));
         expect(stateChecksum(revived)).toBe(stateChecksum(state));
         expect(revived.cursor).toBe(state.cursor);
+        expect(revived.appliedCount).toBe(state.appliedCount);
+        expect(revived.appliedHash).toBe(state.appliedHash);
       }),
       { numRuns: 200 },
     );
@@ -96,9 +108,7 @@ describe("snapshot mechanics", () => {
   test("emits models, entity ids, fields, and fieldVersions in sorted order", () => {
     const snap = takeSnapshot(replayMerged(history));
     expect(Object.keys(snap.entities)).toEqual(["issue", "project"]);
-    expect(Object.keys(snap.entities.issue ?? {})).toEqual(
-      [entityId(0), entityId(2)].sort((a, b) => a.localeCompare(b)),
-    );
+    expect(Object.keys(snap.entities.issue ?? {})).toEqual([entityId(0), entityId(2)].sort());
     expect(Object.keys(snap.entities.issue?.[entityId(2)]?.fields ?? {})).toEqual(["a", "z"]);
     const versionKeys = Object.keys(snap.fieldVersions);
     expect(versionKeys).toEqual([...versionKeys].sort());
@@ -123,11 +133,23 @@ describe("snapshot mechanics", () => {
     expect(snap.v).toBe(SNAPSHOT_VERSION);
   });
 
+  test("rejects snapshots missing the applied-set fingerprint", () => {
+    const snap = takeSnapshot(replayMerged(history));
+    const { appliedHash: _dropped, ...withoutHash } = snap;
+    expect(() =>
+      restoreSnapshot(withoutHash as unknown as ReturnType<typeof takeSnapshot>),
+    ).toThrow("malformed snapshot");
+    const badCount = { ...snap, appliedCount: "3" } as unknown as ReturnType<typeof takeSnapshot>;
+    expect(() => restoreSnapshot(badCount)).toThrow("malformed snapshot");
+  });
+
   test("empty state snapshots and checksums deterministically", () => {
     const empty = replay([]);
     expect(takeSnapshot(empty)).toEqual({
       v: 1,
       cursor: null,
+      appliedCount: 0,
+      appliedHash: EMPTY_APPLIED_HASH,
       entities: {},
       fieldVersions: {},
     });

@@ -40,13 +40,20 @@ export function entityId(i: number): string {
 }
 
 export interface EventSpec {
-  /** Unique per event; determines id, ts, and position in the total order. */
+  /** Unique per event; determines the id and hence position in the total order. */
   seq: number;
   op: Op;
   model: Model;
   /** Index into the shared entity-id pool. */
   entity: number;
   data?: Record<string, unknown>;
+  /**
+   * Decouples ts from id order: ts = testTs(tsSeed ?? seq). Property
+   * generators pass small random seeds so timestamps collide and disagree
+   * with id order — id-vs-ts ordering bugs cannot hide behind aligned
+   * clocks.
+   */
+  tsSeed?: number;
 }
 
 export function makeEvent(spec: EventSpec): KanonEvent {
@@ -58,7 +65,7 @@ export function makeEvent(spec: EventSpec): KanonEvent {
     modelId: entityId(spec.entity),
     data: spec.data ?? {},
     id: testId(spec.seq),
-    ts: testTs(spec.seq),
+    ts: testTs(spec.tsSeed ?? spec.seq),
   });
 }
 
