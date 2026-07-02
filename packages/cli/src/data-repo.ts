@@ -8,7 +8,7 @@
  *     snapshots/           compacted state + cursor (written by compaction, M1)
  */
 
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   createEvent,
@@ -92,14 +92,9 @@ export function appendEvents(dir: string, events: KanonEvent[]): void {
     bySegment.set(segment, lines);
   }
   for (const [segment, lines] of bySegment) {
-    const path = join(dir, "events", segment);
-    let existing = "";
-    try {
-      existing = readFileSync(path, "utf8");
-    } catch {
-      // First event in this segment.
-    }
-    writeFileSync(path, `${existing}${lines.join("\n")}\n`);
+    // True O_APPEND write: a crash can never truncate committed history the
+    // way a read-modify-write could.
+    appendFileSync(join(dir, "events", segment), `${lines.join("\n")}\n`);
   }
 }
 

@@ -1,0 +1,15 @@
+{
+  "name": "@kanon/linear-import",
+  "version": "0.1.0",
+  "description": "One-shot Linear → Kanon importer — preserves display identifiers, idempotent on re-runs",
+  "license": "MIT",
+  "type": "module",
+  "dependencies": {
+    "@kanon/core": "workspace:*",
+    "@linear/sdk": "^88.0.0"
+  },
+  "scripts": {
+    "test": "bun test",
+    "check-types": "tsc --noEmit"
+  }
+}
