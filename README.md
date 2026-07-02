@@ -8,7 +8,7 @@ orchestrate — not the other way around.
 
 The canonical store is an **attributed append-only event log**, carried as JSONL segments in
 one **git data-repo per workspace**. Every store that answers queries — the SQLite cache a
-CLI reads, the Postgres a server materializes, the web UI — is a **rebuildable projection**
+CLI reads, the rendezvous server's projection, the web UI — is a **rebuildable projection**
 of that log. Merge is ULID-ordered union with per-field last-write-wins and OR-Set relations:
 concurrent agents can't lose writes, offline clones converge deterministically, and every
 mutation permanently records *who* (human, agent, session) did *what*, on *which surface*.
@@ -17,7 +17,7 @@ mutation permanently records *who* (human, agent, session) did *what*, on *which
 flowchart TD
     LOG["git data-repo per workspace<br/>events/*.jsonl · append-only · ULID union merge"]
     CLI["agent clones<br/>kanon CLI + SQLite projection<br/>offline-capable, explicit sync"]
-    SRV["rendezvous server<br/>REST · MCP · webhooks · SSE<br/>Postgres projection · ID allocation"]
+    SRV["rendezvous server<br/>REST · webhooks · SSE (MCP in M3)<br/>SQLite projection · ID allocation"]
     A["coding agents"] --> CLI
     D["dispatch daemons"] --> SRV
     H["humans (web UI)"] --> SRV
@@ -44,13 +44,13 @@ segments + snapshots from day one, disposable caches, and a first-class rendezvo
   `assignee` (accountable human) and `delegate` (agent); agent sessions follow the
   thought / elicitation / action / response / error activity model.
 
-## Status: M1
+## Status: M2
 
 | Milestone | Scope | Status |
 |---|---|---|
 | M0 | Scaffold, event schema v1, `kanon init` / `kanon validate` | done |
-| M1 | Core merge/replay + SQLite projection + CLI lifecycle + Linear import | **here** |
-| M2 | Rendezvous server: REST v1, ID allocation, webhooks, event feed | planned |
+| M1 | Core merge/replay + SQLite projection + CLI lifecycle + Linear import | done |
+| M2 | Rendezvous server: REST v1, ID allocation, webhooks, event feed | **here** |
 | M3 | MCP parity + agent sessions/delegation | planned |
 | M4 | Web UI (list/board/detail/cmd-K, SSE) | planned |
 | M5 | Initiatives/status updates/documents + migration tooling | planned |
@@ -106,6 +106,25 @@ back to `git config user.email`, then `user@host`.
 
 The event contract is language-neutral: [`packages/core/schema/event.schema.json`](packages/core/schema/event.schema.json).
 Rust, Python, or anything else can read and write the log directly.
+
+## Rendezvous server
+
+One server per workspace data repo — REST v1, durable event feed
+(`/v1/sync/events`), SSE, signed webhooks, and display-ID allocation, with the
+same SQLite projection the CLI uses (rebuildability is the gate; the substrate
+is disposable by contract). Auth v1 is env bearer keys. Kanon is standalone:
+no orchestrator-specific adapters — the feed + webhooks ARE the contract, and
+[`examples/runner/`](examples/runner/) is an ~80-line reference dispatcher any
+daemon/CI/cron can reimplement.
+
+```sh
+KANON_DATA_DIR=~/kanon-data-myteam \
+KANON_API_KEYS="s3cret-token:carlos@example.com:human" \
+bun apps/server/src/index.ts
+```
+
+Full API table, tenancy/auth model, webhook signature verification, and
+Railway deploy notes: [`apps/server/README.md`](apps/server/README.md).
 
 ## License
 

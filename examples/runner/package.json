@@ -1,0 +1,11 @@
+{
+  "name": "@kanon/example-runner",
+  "version": "0.1.0",
+  "description": "Reference Kanon runner — polls the event feed and executes a command on delegation",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "check-types": "tsc --noEmit"
+  }
+}

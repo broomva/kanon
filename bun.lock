@@ -11,6 +11,19 @@
         "typescript": "^5.9.0",
       },
     },
+    "apps/server": {
+      "name": "@kanon/server",
+      "version": "0.1.0",
+      "dependencies": {
+        "@kanon/core": "workspace:*",
+        "@kanon/store": "workspace:*",
+        "hono": "^4.6.0",
+      },
+    },
+    "examples/runner": {
+      "name": "@kanon/example-runner",
+      "version": "0.1.0",
+    },
     "packages/cli": {
       "name": "@kanon/cli",
       "version": "0.2.0",
@@ -70,7 +83,11 @@
 
     "@kanon/core": ["@kanon/core@workspace:packages/core"],
 
+    "@kanon/example-runner": ["@kanon/example-runner@workspace:examples/runner"],
+
     "@kanon/linear-import": ["@kanon/linear-import@workspace:tools/linear-import"],
+
+    "@kanon/server": ["@kanon/server@workspace:apps/server"],
 
     "@kanon/store": ["@kanon/store@workspace:packages/store"],
 
@@ -97,6 +114,8 @@
     "fast-check": ["fast-check@4.8.0", "", { "dependencies": { "pure-rand": "^8.0.0" } }, "sha512-GOJ158CUMnN6cSahsv4+ExARvIDuzzinFjkp0E9WtiBa5zcVeLozVkWaE4IzFcc+Y48Wp1EDlUZsXRyAztQcSg=="],
 
     "graphql": ["graphql@17.0.1", "", {}, "sha512-8eWbg5Zcv/8o20nzEjHUGPTj20MLFJjc5kagbIPxbaeGxvFwpitJhemEC/k17n5+UD4M/9ea5rTuce78mELujQ=="],
+
+    "hono": ["hono@4.12.27", "", {}, "sha512-1yrb/+w6HWQJrUCLkJ2IF5jNIPvvFkblV5RNOYl6bV+OA6p9GLcMpHFFGTosSvHvcAUibuUukRqhlYI4z32C7Q=="],
 
     "pure-rand": ["pure-rand@8.4.1", "", {}, "sha512-c58R2+SPFcSIPXoU834QN/KPDDOSd8sXcSrqf6e83Me6Rrp1EYkxukkjXMVrKvKaADs1SOyNkWdfvLf6zY8qLQ=="],
 

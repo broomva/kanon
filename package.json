@@ -1,13 +1,14 @@
 {
   "name": "kanon",
   "private": true,
-  "description": "Agent-native work tracker — log-canonical, git-replicated system of record",
+  "description": "Agent-native work tracker \u2014 log-canonical, git-replicated system of record",
   "license": "MIT",
   "packageManager": "bun@1.3.14",
   "workspaces": [
     "packages/*",
     "apps/*",
-    "tools/*"
+    "tools/*",
+    "examples/*"
   ],
   "scripts": {
     "lint": "biome check .",
