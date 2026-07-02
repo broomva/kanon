@@ -77,6 +77,11 @@ function contentHash(events: Iterable<KanonEvent>): string {
   return hash.toString(16).padStart(16, "0");
 }
 
+/** Quote an identifier read back from sqlite_master for safe interpolation. */
+function quoteIdent(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
 function readMeta(db: Database): ProjectionMeta | undefined {
   const table = db
     .query<{ name: string }, []>(
@@ -86,9 +91,16 @@ function readMeta(db: Database): ProjectionMeta | undefined {
   if (table === null) {
     return undefined;
   }
-  const rows = db
-    .query<{ key: string; value: string }, []>("SELECT key, value FROM projection_meta")
-    .all();
+  let rows: { key: string; value: string }[];
+  try {
+    rows = db
+      .query<{ key: string; value: string }, []>("SELECT key, value FROM projection_meta")
+      .all();
+  } catch {
+    // An incompatible projection_meta shape (older cache, foreign schema) is
+    // just a stale disposable cache — signal "rebuild", never throw.
+    return undefined;
+  }
   const byKey = new Map(rows.map((row) => [row.key, row.value]));
   const schemaVersion = Number(byKey.get("schema_version"));
   const eventCount = Number(byKey.get("event_count"));
@@ -117,7 +129,7 @@ function dropAllTables(db: Database): void {
     )
     .all();
   for (const { name } of tables) {
-    db.run(`DROP TABLE IF EXISTS "${name}"`);
+    db.run(`DROP TABLE IF EXISTS ${quoteIdent(name)}`);
   }
 }
 
@@ -359,7 +371,7 @@ export function projectionChecksum(db: Database): string {
     .all();
   const parts: string[] = [];
   for (const { name } of tables) {
-    const rows = db.query(`SELECT * FROM "${name}"`).all() as Record<string, unknown>[];
+    const rows = db.query(`SELECT * FROM ${quoteIdent(name)}`).all() as Record<string, unknown>[];
     const serialized = rows.map((row) => stableStringify(row)).sort();
     parts.push(`${name}\n${serialized.join("\n")}`);
   }
