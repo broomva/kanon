@@ -18,6 +18,7 @@
 
 import type { Model } from "./index";
 import type { Entity, WorldState } from "./replay";
+import { RESERVED_FIELD_PREFIX } from "./replay";
 import { fnv1a64, stableStringify } from "./stable";
 
 export const SNAPSHOT_VERSION = 1 as const;
@@ -36,11 +37,26 @@ export interface SnapshotV1 {
   fieldVersions: Record<string, string>;
 }
 
-function snapshotEntity(entity: Entity): Entity {
-  const fields: Record<string, unknown> = {};
-  for (const key of Object.keys(entity.fields).sort()) {
-    fields[key] = entity.fields[key];
+/**
+ * Copy entity fields with sorted keys, dropping reserved (`__`-prefixed)
+ * keys. Replay's applyFields never lets them into `entity.fields`, but an
+ * untrusted/corrupted snapshot can carry them — and a crafted `"__proto__"`
+ * own-property key would poison a plain accumulator via bracket assignment.
+ * Building on a null-prototype object plus the filter closes both holes.
+ */
+function copyFields(src: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = Object.create(null);
+  for (const key of Object.keys(src).sort()) {
+    if (key.startsWith(RESERVED_FIELD_PREFIX)) {
+      continue;
+    }
+    out[key] = src[key];
   }
+  return { ...out };
+}
+
+function snapshotEntity(entity: Entity): Entity {
+  const fields = copyFields(entity.fields);
   // Fixed property order so identical entities serialize identically.
   return {
     id: entity.id,
@@ -112,7 +128,7 @@ export function restoreSnapshot(snap: SnapshotV1): WorldState {
   for (const [model, byIdRecord] of Object.entries(snap.entities)) {
     const byId = new Map<string, Entity>();
     for (const [id, entity] of Object.entries(byIdRecord)) {
-      byId.set(id, { ...entity, fields: { ...entity.fields } });
+      byId.set(id, { ...entity, fields: copyFields(entity.fields) });
     }
     // Snapshot entity keys are Model values by construction (see SnapshotV1).
     entities.set(model as Model, byId);
