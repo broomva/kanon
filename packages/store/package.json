@@ -1,0 +1,17 @@
+{
+  "name": "@kanon/store",
+  "version": "0.1.0",
+  "description": "SQLite projection of the Kanon event log — a disposable, rebuildable query cache",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@kanon/core": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test",
+    "check-types": "tsc --noEmit"
+  }
+}
