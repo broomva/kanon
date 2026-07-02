@@ -3,17 +3,28 @@
  *
  * The log is the source of truth; `state.db` can be deleted at any time and
  * rebuilt with identical content (the data repo's .gitignore excludes it from
- * history). `refresh()` compares the log's head id + event count against a
- * `projection_meta` table and, on ANY mismatch, drops every table and
- * rebuilds from a fresh full replay — genesis onward, never snapshot-resume.
- * Full rebuild sidesteps the entire `ReplayDivergenceError` class (a merged
- * log can legally gain events below any cursor), and thousands of events
- * replay in milliseconds, so v1 buys correctness for free.
+ * history). `refresh()` compares the log's head id + event count + a
+ * content hash (XOR-fold of each merged event's canonical serialization —
+ * head/count alone would miss a conflicting duplicate whose content wins the
+ * merge tie-break without changing either) against a `projection_meta`
+ * table and, on ANY mismatch, drops every table and rebuilds from a fresh
+ * full replay — genesis onward, never snapshot-resume. A log that reports
+ * merge conflicts always rebuilds. Full rebuild sidesteps the entire
+ * `ReplayDivergenceError` class (a merged log can legally gain events below
+ * any cursor), and thousands of events replay in milliseconds, so v1 buys
+ * correctness for free.
  */
 
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
-import { type Entity, fnv1a64, type Model, replay, stableStringify } from "@kanon/core";
+import {
+  type Entity,
+  fnv1a64,
+  type KanonEvent,
+  type Model,
+  replay,
+  stableStringify,
+} from "@kanon/core";
 import { loadLog } from "./log";
 import { MODEL_TABLES, PROJECTION_SCHEMA_VERSION, schemaDdl, type TableSpec } from "./schema";
 
@@ -47,9 +58,24 @@ interface ProjectionMeta {
   schemaVersion: number;
   headId: string | null;
   eventCount: number;
+  contentHash: string;
 }
 
 type Binding = string | number | null;
+
+/**
+ * Order-independent content fingerprint of the merged stream: XOR-fold of
+ * FNV-1a 64 over each event's canonical serialization. Head id + count are
+ * NOT enough for staleness: a conflicting duplicate that wins the merge
+ * tie-break changes canonical CONTENT while leaving both unchanged.
+ */
+function contentHash(events: Iterable<KanonEvent>): string {
+  let hash = 0n;
+  for (const event of events) {
+    hash ^= BigInt(`0x${fnv1a64(stableStringify(event))}`);
+  }
+  return hash.toString(16).padStart(16, "0");
+}
 
 function readMeta(db: Database): ProjectionMeta | undefined {
   const table = db
@@ -67,10 +93,21 @@ function readMeta(db: Database): ProjectionMeta | undefined {
   const schemaVersion = Number(byKey.get("schema_version"));
   const eventCount = Number(byKey.get("event_count"));
   const headId = byKey.get("head_id");
-  if (!Number.isInteger(schemaVersion) || !Number.isInteger(eventCount) || headId === undefined) {
+  const storedHash = byKey.get("content_hash");
+  if (
+    !Number.isInteger(schemaVersion) ||
+    !Number.isInteger(eventCount) ||
+    headId === undefined ||
+    storedHash === undefined
+  ) {
     return undefined;
   }
-  return { schemaVersion, headId: headId === "" ? null : headId, eventCount };
+  return {
+    schemaVersion,
+    headId: headId === "" ? null : headId,
+    eventCount,
+    contentHash: storedHash,
+  };
 }
 
 function dropAllTables(db: Database): void {
@@ -207,11 +244,15 @@ function insertIssues(
 
 export function openProjection(dataRepoDir: string, options: ProjectionOptions = {}): Projection {
   const db = new Database(join(dataRepoDir, "state.db"), { create: true });
+  // Concurrent CLI invocations rebuild against the same cache file; wait for
+  // the write lock instead of throwing SQLITE_BUSY at the first contender.
+  db.run("PRAGMA busy_timeout = 5000");
   const warn = options.onWarn ?? ((message: string) => console.warn(message));
 
   const rebuildFrom = (
     events: ReturnType<typeof loadLog>["events"],
     conflictCount: number,
+    hash: string,
   ): RefreshResult => {
     const state = replay(events);
     const headId = events.at(-1)?.id ?? null;
@@ -243,12 +284,17 @@ export function openProjection(dataRepoDir: string, options: ProjectionOptions =
       setMeta.run("schema_version", String(PROJECTION_SCHEMA_VERSION));
       setMeta.run("head_id", headId ?? "");
       setMeta.run("event_count", String(events.length));
+      setMeta.run("content_hash", hash);
     });
     run();
     return { rebuilt: true, eventCount: events.length, headId, conflictCount };
   };
 
-  const load = (): { events: ReturnType<typeof loadLog>["events"]; conflictCount: number } => {
+  const load = (): {
+    events: ReturnType<typeof loadLog>["events"];
+    conflictCount: number;
+    hash: string;
+  } => {
     const report = loadLog(dataRepoDir);
     if (report.conflicts.length > 0) {
       warn(
@@ -257,29 +303,35 @@ export function openProjection(dataRepoDir: string, options: ProjectionOptions =
           "misbehaving — proceeding with the tie-broken canonical stream",
       );
     }
-    return { events: report.events, conflictCount: report.conflicts.length };
+    return {
+      events: report.events,
+      conflictCount: report.conflicts.length,
+      hash: contentHash(report.events),
+    };
   };
 
   return {
     db,
     dir: dataRepoDir,
     refresh(): RefreshResult {
-      const { events, conflictCount } = load();
+      const { events, conflictCount, hash } = load();
       const headId = events.at(-1)?.id ?? null;
       const meta = readMeta(db);
       if (
+        conflictCount === 0 && // a conflicted log always rebuilds
         meta !== undefined &&
         meta.schemaVersion === PROJECTION_SCHEMA_VERSION &&
         meta.headId === headId &&
-        meta.eventCount === events.length
+        meta.eventCount === events.length &&
+        meta.contentHash === hash
       ) {
         return { rebuilt: false, eventCount: events.length, headId, conflictCount };
       }
-      return rebuildFrom(events, conflictCount);
+      return rebuildFrom(events, conflictCount, hash);
     },
     rebuild(): RefreshResult {
-      const { events, conflictCount } = load();
-      return rebuildFrom(events, conflictCount);
+      const { events, conflictCount, hash } = load();
+      return rebuildFrom(events, conflictCount, hash);
     },
     close(): void {
       db.close();
