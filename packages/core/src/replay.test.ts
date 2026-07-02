@@ -9,11 +9,13 @@ import {
   fieldVersionKey,
   ReplayDivergenceError,
   ReplayOrderError,
+  ReplayStateError,
   replay,
   replayMerged,
 } from "./replay";
 import { stateChecksum } from "./snapshot";
-import { entityId, makeEvent, mustGetEntity } from "./testing";
+import { stableStringify } from "./stable";
+import { entityId, makeEvent, mustGetEntity, testTs } from "./testing";
 
 const OP_POOL = [
   "create",
@@ -129,35 +131,63 @@ describe("replay properties", () => {
       fc.record({
         events: fc.constant(events),
         mask: fc.array(fc.boolean(), { minLength: events.length, maxLength: events.length }),
+        // Byzantine growth: same-id occurrences with independent content/ts
+        // that may displace canonical content via the merge tie-break.
+        dupes: fc.array(
+          fc.record({
+            index: fc.nat(),
+            title: fc.string({ maxLength: 5 }),
+            tsSeed: fc.integer({ min: 0, max: 15 }),
+          }),
+          { maxLength: 4 },
+        ),
       }),
     );
     fc.assert(
-      fc.property(arb, ({ events, mask }) => {
+      fc.property(arb, ({ events, mask, dupes }) => {
         const sorted = unionMerge(events);
-        const baseline = stateChecksum(replay(sorted));
 
         // Pure suffix extension from a snapshot point always succeeds.
         const k = Math.floor(sorted.length / 2);
         const head = replay(sorted.slice(0, k));
         replay(sorted.slice(k), head);
-        expect(stateChecksum(head)).toBe(baseline);
+        expect(stateChecksum(head)).toBe(stateChecksum(replay(sorted)));
 
-        // Resume against the FULL merged log from a random applied subset:
-        // sound iff the subset is exactly the log's prefix up to its cursor.
+        // Replica applied a random subset of the original history.
         const subset = sorted.filter((_, i) => mask[i] === true);
         if (subset.length === 0) {
           return;
         }
         const state = replay(subset);
         const cursor = subset[subset.length - 1]?.id ?? "";
-        const isPrefix = sorted.filter((e) => e.id <= cursor).length === subset.length;
-        if (isPrefix) {
-          replay(sorted, state);
+
+        // The log then grows: new ids may appear anywhere AND conflicting
+        // duplicates may displace canonical content for ids the replica
+        // already applied.
+        const variants = dupes.map((dupe): KanonEvent => {
+          const at = dupe.index % sorted.length;
+          const base = sorted[at];
+          if (base === undefined) {
+            throw new Error("unreachable: index is taken modulo sorted.length");
+          }
+          return { ...base, data: { title: dupe.title }, ts: testTs(dupe.tsSeed) };
+        });
+        const merged = unionMerge(sorted, variants);
+        const baseline = stateChecksum(replay(merged));
+
+        // Resume is sound iff the merged log's prefix at or below the
+        // cursor is exactly the applied events — content included.
+        const prefix = merged.filter((e) => e.id <= cursor);
+        const soundResume =
+          prefix.length === subset.length &&
+          prefix.every((e, i) => stableStringify(e) === stableStringify(subset[i]));
+        if (soundResume) {
+          replay(merged, state);
           expect(stateChecksum(state)).toBe(baseline);
         } else {
-          // The log contains events below the cursor that were never
-          // applied — silent skipping would lose them, so replay must fail.
-          expect(() => replay(sorted, state)).toThrow(ReplayDivergenceError);
+          // Silent skipping would lose events or keep displaced content, so
+          // replay must fail loudly.
+          expect(() => replay(merged, state)).toThrow(ReplayDivergenceError);
         }
       }),
       { numRuns: 200 },
@@ -269,6 +299,47 @@ describe("resume soundness (fix #1)", () => {
     expect(() => replay([e1, e1])).toThrow(ReplayOrderError); // fresh, duplicate
     const state = replay([e1]);
     expect(() => replay([e2, e2], state)).toThrow(ReplayOrderError); // resumed, duplicate
+  });
+
+  test("REGRESSION: a below-cursor duplicate whose content became canonical is caught on resume (round-2 #1)", () => {
+    // Reviewer repro: replica applied the tie-break LOSER ("zzz"); the
+    // merged log's canonical occurrence is the winner ("aaa"). Ids are
+    // identical, so an id-only fingerprint would pass verification and the
+    // replica would silently keep "zzz" while fresh rebuilds hold "aaa".
+    const winner = makeEvent({
+      seq: 1,
+      op: "create",
+      model: "issue",
+      entity: 0,
+      data: { title: "aaa" },
+    });
+    const loser = makeEvent({
+      seq: 1,
+      op: "create",
+      model: "issue",
+      entity: 0,
+      data: { title: "zzz" },
+    });
+    const merged = unionMerge([winner], [loser]);
+    expect(merged).toEqual([winner]); // tie-break kept the canonical content
+
+    const replica = replay([loser]); // this replica applied the displaced content
+    expect(() => replay(merged, replica)).toThrow(ReplayDivergenceError);
+
+    // Fresh rebuilds converge on the canonical content.
+    const rebuilt = replay(merged);
+    expect(mustGetEntity(rebuilt, "issue", entityId(0)).fields.title).toBe("aaa");
+    expect(stateChecksum(rebuilt)).not.toBe(stateChecksum(replica));
+  });
+
+  test("a raw-applyEvent state (applied events, no cursor) is rejected with ReplayStateError (round-2 #2)", () => {
+    const e1 = makeEvent({ seq: 1, op: "create", model: "issue", entity: 0, data: {} });
+    const e2 = makeEvent({ seq: 2, op: "update", model: "issue", entity: 0, data: { t: 1 } });
+    const rawState = createWorldState();
+    applyEvent(rawState, e1); // appliedCount > 0, cursor still null
+    expect(() => replay([e2], rawState)).toThrow(ReplayStateError);
+    // A fresh empty state is fine — the guard targets raw-applyEvent mixes only.
+    expect(() => replay([e1, e2])).not.toThrow();
   });
 });
 

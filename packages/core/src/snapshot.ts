@@ -28,7 +28,7 @@ export interface SnapshotV1 {
   cursor: string | null;
   /** Number of events applied to this state. */
   appliedCount: number;
-  /** Order-independent XOR-fold fingerprint of applied event ids (16-hex). */
+  /** Order-independent XOR-fold fingerprint of applied events (canonical content, 16-hex). */
   appliedHash: string;
   /** model -> entity id -> entity; all keys sorted. Keys are `Model` values. */
   entities: Record<string, Record<string, Entity>>;

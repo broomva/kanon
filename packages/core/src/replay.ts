@@ -13,15 +13,18 @@
  * *gain events with ids below the cursor* (a sync pulls in older events from
  * another replica), and skipping everything `<= cursor` would silently drop
  * them. `WorldState` therefore carries an order-independent fingerprint of
- * the applied event-id set — `appliedCount` plus `appliedHash` (XOR-fold of
- * FNV-1a 64 over each applied id). A resumed `replay` accepts exactly two
- * stream shapes:
+ * the applied events — `appliedCount` plus `appliedHash` (XOR-fold of
+ * FNV-1a 64 over each applied event's **canonical serialization**, not just
+ * its id: the merge tie-break means the same id can carry different
+ * canonical content, so an id-only fingerprint would miss a below-cursor
+ * duplicate whose content displaced what this replica applied). A resumed
+ * `replay` accepts exactly two stream shapes:
  *
  *   1. a **pure suffix** — every id > cursor (e.g. `sorted.slice(k)` after
  *      restoring the snapshot taken at k), or
  *   2. a **full merged log** — whose prefix at or below the cursor matches
  *      the fingerprint (same count, same hash) and is therefore exactly the
- *      set already applied.
+ *      EVENTS already applied, content included.
  *
  * Anything else throws `ReplayDivergenceError` *before mutating the state*:
  * the log's history changed underneath the cursor and the only sound move is
@@ -53,7 +56,7 @@
 
 import type { KanonEvent, Model } from "./index";
 import { unionMerge } from "./merge";
-import { fnv1a64 } from "./stable";
+import { fnv1a64, stableStringify } from "./stable";
 
 /** Reserved pseudo-field carrying archive state through the LWW machinery. */
 export const ARCHIVED_FIELD = "__archived";
@@ -81,16 +84,31 @@ export class ReplayOrderError extends Error {
 
 /**
  * Thrown when a resumed `replay` detects that the incoming stream's prefix
- * at or below the cursor is not the set of events already applied — the log
- * gained or changed history underneath the cursor. The state was NOT
- * mutated. Recovery: full rebuild — replay the complete merged log into a
- * fresh WorldState (or restore an older snapshot known to precede the
- * divergence).
+ * at or below the cursor is not the events already applied (by content, not
+ * just id) — the log gained or changed history underneath the cursor. The
+ * state was NOT mutated. Recovery: full rebuild — replay the complete
+ * merged log into a fresh WorldState (or restore an older snapshot known to
+ * precede the divergence).
  */
 export class ReplayDivergenceError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ReplayDivergenceError";
+  }
+}
+
+/**
+ * Thrown when `replay` is handed an initial state it cannot reason about:
+ * events were applied (`appliedCount > 0`) but no cursor was ever set. Such
+ * a state was built with raw `applyEvent`, whose fingerprint bookkeeping
+ * `replay` cannot verify against a stream (re-application would XOR-cancel
+ * the hash and double-count). Either keep driving that state with
+ * `applyEvent`, or rebuild it via `replay` from a merged log.
+ */
+export class ReplayStateError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ReplayStateError";
   }
 }
 
@@ -126,10 +144,12 @@ export interface WorldState {
   /** Number of events ever applied (via `replay` or raw `applyEvent`). */
   appliedCount: number;
   /**
-   * Order-independent fingerprint of the applied event-id set: XOR-fold of
-   * `fnv1a64(id)` across applied events, 16-char lowercase hex. Together
-   * with `appliedCount` this lets a resumed replay verify that a stream's
-   * prefix at or below the cursor is exactly the history already applied.
+   * Order-independent fingerprint of the applied events: XOR-fold of
+   * `fnv1a64(stableStringify(event))` across applied events, 16-char
+   * lowercase hex. Content-based on purpose — the merge tie-break means one
+   * id can carry different canonical content across replicas. Together with
+   * `appliedCount` this lets a resumed replay verify that a stream's prefix
+   * at or below the cursor is exactly the events already applied.
    */
   appliedHash: string;
 }
@@ -149,9 +169,9 @@ export function fieldVersionKey(model: Model, id: string, field: string): string
   return `${model} ${id} ${field}`;
 }
 
-/** XOR-fold one event id into an applied-set fingerprint. */
-function foldAppliedId(hash: string, eventId: string): string {
-  const folded = BigInt(`0x${hash}`) ^ BigInt(`0x${fnv1a64(eventId)}`);
+/** XOR-fold one event's canonical serialization into an applied-events fingerprint. */
+function foldAppliedEvent(hash: string, event: KanonEvent): string {
+  const folded = BigInt(`0x${hash}`) ^ BigInt(`0x${fnv1a64(stableStringify(event))}`);
   return folded.toString(16).padStart(16, "0");
 }
 
@@ -270,7 +290,7 @@ export function applyEvent(state: WorldState, event: KanonEvent): WorldState {
   }
   touch(entity, event);
   state.appliedCount += 1;
-  state.appliedHash = foldAppliedId(state.appliedHash, event.id);
+  state.appliedHash = foldAppliedEvent(state.appliedHash, event);
   return state;
 }
 
@@ -279,11 +299,11 @@ function verifyResumePrefix(state: WorldState, prefixCount: number, prefixHash: 
     return; // pure suffix extension — nothing below the cursor to verify
   }
   if (prefixCount === state.appliedCount && prefixHash === state.appliedHash) {
-    return; // prefix is exactly the applied set
+    return; // prefix is exactly the applied events, content included
   }
   throw new ReplayDivergenceError(
     `resumed stream's prefix at or below cursor ${String(state.cursor)} does not match the ` +
-      `applied set (prefix: ${prefixCount} events, hash ${prefixHash}; applied: ` +
+      `applied events (prefix: ${prefixCount} events, hash ${prefixHash}; applied: ` +
       `${state.appliedCount} events, hash ${state.appliedHash}). The merged log gained or ` +
       "changed history below the cursor — full rebuild required: replay the complete merged " +
       "log into a fresh WorldState.",
@@ -295,11 +315,19 @@ function verifyResumePrefix(state: WorldState, prefixCount: number, prefixHash: 
  * strictly ascending by event id and deduped (see the module contract);
  * violations throw `ReplayOrderError`. When resuming (`state.cursor` set),
  * the stream must be a pure suffix or a full merged log whose prefix
- * matches the applied-set fingerprint; otherwise `ReplayDivergenceError` is
- * thrown before any mutation.
+ * matches the applied-events fingerprint; otherwise `ReplayDivergenceError`
+ * is thrown before any mutation. States built with raw `applyEvent`
+ * (applied events but no cursor) are rejected with `ReplayStateError`.
  */
 export function replay(events: Iterable<KanonEvent>, initial?: WorldState): WorldState {
   const state = initial ?? createWorldState();
+  if (state.cursor === null && state.appliedCount > 0) {
+    throw new ReplayStateError(
+      "initial state has applied events but no cursor — it was built with raw applyEvent, " +
+        "which replay cannot verify against a stream (re-application would corrupt the " +
+        "fingerprint). Keep driving it with applyEvent, or rebuild via replay from a merged log.",
+    );
+  }
   let previousId: string | null = null;
   let prefixCount = 0;
   let prefixHash = EMPTY_APPLIED_HASH;
@@ -314,7 +342,7 @@ export function replay(events: Iterable<KanonEvent>, initial?: WorldState): Worl
     previousId = event.id;
     if (!prefixVerified && state.cursor !== null && event.id <= state.cursor) {
       prefixCount += 1;
-      prefixHash = foldAppliedId(prefixHash, event.id);
+      prefixHash = foldAppliedEvent(prefixHash, event);
       continue;
     }
     if (!prefixVerified) {
