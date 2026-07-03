@@ -15,11 +15,18 @@ import type { KanonService } from "@kanon/service";
 import { ServiceError } from "@kanon/service";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { LINEAR_TOOL_SCHEMAS } from "./linear-schemas";
+import { KANON_TOOL_SCHEMAS } from "./kanon-schemas";
+import { LINEAR_TOOL_SCHEMAS, type ToolSchema } from "./linear-schemas";
 import { TOOL_HANDLERS, type ToolContext } from "./tools";
 
 export const SERVER_NAME = "linear-server";
-export const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = "0.2.0";
+
+/** The advertised surface: the Linear parity set + Kanon session extensions. */
+export const ALL_TOOL_SCHEMAS: Record<string, ToolSchema> = {
+  ...LINEAR_TOOL_SCHEMAS,
+  ...KANON_TOOL_SCHEMAS,
+};
 
 export function createKanonMcpServer(service: KanonService, actor: EventActor): Server {
   const server = new Server(
@@ -29,7 +36,7 @@ export function createKanonMcpServer(service: KanonService, actor: EventActor): 
   const ctx: ToolContext = { service, actor };
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: Object.entries(LINEAR_TOOL_SCHEMAS).map(([name, schema]) => ({
+    tools: Object.entries(ALL_TOOL_SCHEMAS).map(([name, schema]) => ({
       name,
       description: schema.description,
       inputSchema: schema.inputSchema,

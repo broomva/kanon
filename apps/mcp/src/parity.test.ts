@@ -24,8 +24,9 @@ import { initDataRepo } from "@kanon/store";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import oracle from "../fixtures/linear-server-tools.json" with { type: "json" };
+import { KANON_TOOL_SCHEMAS } from "./kanon-schemas";
 import { LINEAR_TOOL_SCHEMAS } from "./linear-schemas";
-import { createKanonMcpServer, SERVER_NAME } from "./server";
+import { ALL_TOOL_SCHEMAS, createKanonMcpServer, SERVER_NAME } from "./server";
 import { TOOL_HANDLERS } from "./tools";
 
 interface Contract {
@@ -75,11 +76,12 @@ describe("linear-server parity", () => {
   });
 
   test("every schema'd tool has a handler and vice versa", () => {
-    expect(Object.keys(TOOL_HANDLERS).sort()).toEqual(Object.keys(LINEAR_TOOL_SCHEMAS).sort());
+    expect(Object.keys(TOOL_HANDLERS).sort()).toEqual(Object.keys(ALL_TOOL_SCHEMAS).sort());
   });
 
   test("served tool contract matches the captured linear-server oracle", () => {
-    // Same tool set as the oracle.
+    // The LINEAR set is exactly the oracle — Kanon extensions live in
+    // KANON_TOOL_SCHEMAS and never dilute the parity surface.
     expect(Object.keys(LINEAR_TOOL_SCHEMAS).sort()).toEqual(Object.keys(ORACLE).sort());
     // Each tool's arg contract (names/types/enums/required) equals the oracle.
     for (const [name, schema] of Object.entries(LINEAR_TOOL_SCHEMAS)) {
@@ -89,11 +91,17 @@ describe("linear-server parity", () => {
     }
   });
 
+  test("kanon extension tools never collide with an oracle tool name", () => {
+    for (const name of Object.keys(KANON_TOOL_SCHEMAS)) {
+      expect(ORACLE[name], `${name} must not shadow a linear-server tool`).toBeUndefined();
+    }
+  });
+
   test("advertised tools/list equals the module verbatim (no runtime drift)", async () => {
     const tools = await listAdvertisedTools();
     const advertised = new Map(tools.map((tool) => [tool.name, tool]));
-    expect([...advertised.keys()].sort()).toEqual(Object.keys(LINEAR_TOOL_SCHEMAS).sort());
-    for (const [name, schema] of Object.entries(LINEAR_TOOL_SCHEMAS)) {
+    expect([...advertised.keys()].sort()).toEqual(Object.keys(ALL_TOOL_SCHEMAS).sort());
+    for (const [name, schema] of Object.entries(ALL_TOOL_SCHEMAS)) {
       const tool = advertised.get(name);
       expect(tool?.description).toBe(schema.description);
       expect(tool?.inputSchema).toEqual(schema.inputSchema);

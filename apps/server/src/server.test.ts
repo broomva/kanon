@@ -283,6 +283,197 @@ describe("ready", () => {
 });
 
 // ---------------------------------------------------------------------------
+// relation removal + null-to-remove (M3 Phase 2)
+// ---------------------------------------------------------------------------
+
+describe("relation removal + null-to-remove", () => {
+  test("DELETE relations tombstones the edge; unblocks; idempotent", async () => {
+    const { url } = boot();
+    await ok(url, "POST", "/v1/teams", { key: "BRO", name: "Broomva" });
+    await ok(url, "POST", "/v1/issues", { team: "BRO", title: "Blocker" }); // BRO-1
+    await ok(url, "POST", "/v1/issues", { team: "BRO", title: "Blocked" }); // BRO-2
+    await ok(url, "POST", "/v1/issues/BRO-1/relations", { type: "blocks", target: "BRO-2" });
+
+    const removed = await api(url, "DELETE", "/v1/issues/BRO-1/relations", {
+      type: "blocks",
+      target: "BRO-2",
+    });
+    expect(removed.status).toBe(200);
+    expect(removed.body.removed).toBe(true);
+
+    const ready = await ok(url, "GET", "/v1/ready?team=BRO");
+    expect((ready.issues as { title: string }[]).map((issue) => issue.title).sort()).toEqual([
+      "Blocked",
+      "Blocker",
+    ]);
+    // Removing again: honest false, no phantom write.
+    const again = await api(url, "DELETE", "/v1/issues/BRO-1/relations", {
+      type: "blocks",
+      target: "BRO-2",
+    });
+    expect(again.body.removed).toBe(false);
+  });
+
+  test("PATCH assignee:null clears the seat", async () => {
+    const { url } = boot();
+    await ok(url, "POST", "/v1/teams", { key: "BRO", name: "Broomva" });
+    await ok(url, "POST", "/v1/issues", { team: "BRO", title: "X", assignee: "bob@x.io" });
+    expect((await ok(url, "GET", "/v1/issues/BRO-1")).issue).toHaveProperty("assigneeId");
+    const before = (await ok(url, "GET", "/v1/issues/BRO-1")).issue as {
+      assigneeId: string | null;
+    };
+    expect(before.assigneeId).not.toBeNull();
+
+    await ok(url, "PATCH", "/v1/issues/BRO-1", { assignee: null });
+    const after = (await ok(url, "GET", "/v1/issues/BRO-1")).issue as { assigneeId: string | null };
+    expect(after.assigneeId).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// agent sessions + activities (M3 Phase 2)
+// ---------------------------------------------------------------------------
+
+describe("agent sessions", () => {
+  test("delegate → activity timeline → complete; delegate seat re-pointed", async () => {
+    const { url } = boot();
+    await ok(url, "POST", "/v1/teams", { key: "BRO", name: "Broomva" });
+    await ok(url, "POST", "/v1/issues", { team: "BRO", title: "Ship" });
+
+    const created = await ok(url, "POST", "/v1/agent-sessions", {
+      issue: "BRO-1",
+      agent: "worker-bot",
+      prompt: "Ship it end to end.",
+    });
+    const session = created.session as { id: string; state: string };
+    expect(session.state).toBe("pending");
+    expect((created.activity as { type: string }).type).toBe("prompt");
+
+    // The issue's delegate seat now points at the session's agent.
+    const issue = (await ok(url, "GET", "/v1/issues/BRO-1")).issue as { delegateId: string | null };
+    expect(issue.delegateId).not.toBeNull();
+
+    const step = async (type: string, body: string) => {
+      const result = await ok(url, "POST", `/v1/agent-sessions/${session.id}/activities`, {
+        type,
+        body,
+      });
+      return (result.session as { state: string }).state;
+    };
+    expect(await step("thought", "reading")).toBe("active");
+    expect(await step("elicitation", "prod too?")).toBe("awaitingInput");
+    expect(await step("prompt", "yes")).toBe("active");
+    expect(await step("response", "done")).toBe("complete");
+
+    const detail = await ok(url, "GET", `/v1/agent-sessions/${session.id}`);
+    expect((detail.session as { state: string }).state).toBe("complete");
+    expect((detail.activities as unknown[]).length).toBe(5);
+    expect((detail.issue as { identifier: string }).identifier).toBe("BRO-1");
+
+    // Filter by state.
+    const complete = await ok(url, "GET", "/v1/agent-sessions?state=complete");
+    expect((complete.sessions as unknown[]).length).toBe(1);
+    expect((await ok(url, "GET", "/v1/agent-sessions?state=pending")).sessions).toEqual([]);
+  });
+
+  test("unknown session → 404; bad activity type → 400", async () => {
+    const { url } = boot();
+    await ok(url, "POST", "/v1/teams", { key: "BRO", name: "Broomva" });
+    await ok(url, "POST", "/v1/issues", { team: "BRO", title: "X" });
+    const created = await ok(url, "POST", "/v1/agent-sessions", { issue: "BRO-1" });
+    const id = (created.session as { id: string }).id;
+    expect((await api(url, "GET", "/v1/agent-sessions/01AAAAAAAAAAAAAAAAAAAAAAAA")).status).toBe(
+      404,
+    );
+    expect(
+      (await api(url, "POST", `/v1/agent-sessions/${id}/activities`, { type: "nope", body: "x" }))
+        .status,
+    ).toBe(400);
+  });
+
+  test("janitor stales an idle live session", async () => {
+    // 40ms threshold, 20ms tick.
+    const { url } = boot({ sessionStaleMs: "40", sessionJanitorIntervalMs: "20" });
+    await ok(url, "POST", "/v1/teams", { key: "BRO", name: "Broomva" });
+    await ok(url, "POST", "/v1/issues", { team: "BRO", title: "Idle" });
+    const created = await ok(url, "POST", "/v1/agent-sessions", { issue: "BRO-1" });
+    const id = (created.session as { id: string }).id;
+
+    // Wait past threshold + a couple of ticks; the server janitor marks it stale.
+    await Bun.sleep(400);
+    const detail = await ok(url, "GET", `/v1/agent-sessions/${id}`);
+    expect((detail.session as { state: string }).state).toBe("stale");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MCP over streamable HTTP (same surface as the stdio MCP, 404-shaped auth)
+// ---------------------------------------------------------------------------
+
+describe("MCP HTTP transport", () => {
+  const RPC = { "content-type": "application/json", accept: "application/json, text/event-stream" };
+
+  async function rpc(url: string, key: string | undefined, body: unknown) {
+    return fetch(`${url}/mcp`, {
+      method: "POST",
+      headers: {
+        ...RPC,
+        ...(key === undefined ? {} : { authorization: `Bearer ${key}` }),
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  test("unauthorized /mcp → 404, indistinguishable from a missing route", async () => {
+    const { url } = boot();
+    const denied = await rpc(url, "some-other-workspaces-key", {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+    });
+    expect(denied.status).toBe(404);
+    expect(await denied.text()).not.toContain("test");
+  });
+
+  test("tools/list advertises the linear-server surface + kanon extensions", async () => {
+    const { url } = boot();
+    const response = await rpc(url, "agent-key", {
+      jsonrpc: "2.0",
+      id: 1,
+      method: "tools/list",
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      result: { tools: { name: string }[] };
+    };
+    const names = payload.result.tools.map((tool) => tool.name);
+    expect(names).toContain("save_issue");
+    expect(names).toContain("create_agent_session");
+    expect(names).toContain("append_agent_activity");
+  });
+
+  test("tools/call save_issue writes through the same log the REST API reads", async () => {
+    const { url } = boot();
+    await ok(url, "POST", "/v1/teams", { key: "BRO", name: "Broomva" });
+    const response = await rpc(url, "agent-key", {
+      jsonrpc: "2.0",
+      id: 2,
+      method: "tools/call",
+      params: { name: "save_issue", arguments: { team: "BRO", title: "Via MCP" } },
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      result: { content: { text: string }[] };
+    };
+    expect(payload.result.content[0]?.text).toContain("BRO-1");
+
+    // The issue is visible over REST — one log, two adapters.
+    const list = await ok(url, "GET", "/v1/issues?team=BRO");
+    expect((list.issues as { title: string }[])[0]?.title).toBe("Via MCP");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // projection rebuild-from-scratch
 // ---------------------------------------------------------------------------
 

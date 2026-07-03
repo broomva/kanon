@@ -58,6 +58,32 @@ export function startServer(config: ServerConfig): RunningServer {
     }
   }
 
+  // Stale-session janitor: live sessions with no movement past the threshold
+  // get marked `stale`. The server (the daemon that owns the clone) is the
+  // ONE janitor — per-agent stdio MCPs deliberately don't run it, so
+  // concurrent processes never race to stale the same session.
+  const JANITOR_ACTOR = { type: "system", id: "kanon-janitor", surface: "system" } as const;
+  let janitorTimer: ReturnType<typeof setInterval> | undefined;
+  if (config.sessionStaleMs > 0) {
+    janitorTimer = setInterval(() => {
+      try {
+        const { staled } = service.markStaleSessions(JANITOR_ACTOR, config.sessionStaleMs);
+        if (staled.length > 0) {
+          console.warn(`kanon-server: janitor staled ${staled.length} agent session(s)`);
+        }
+      } catch (error) {
+        console.warn(
+          `kanon-server: session janitor failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }, config.sessionJanitorIntervalMs);
+    if (typeof janitorTimer === "object" && "unref" in janitorTimer) {
+      janitorTimer.unref();
+    }
+  }
+
   const server = Bun.serve({
     port: config.port,
     fetch: app.fetch,
@@ -73,6 +99,7 @@ export function startServer(config: ServerConfig): RunningServer {
     deliverer,
     stop(): void {
       if (syncTimer !== undefined) clearInterval(syncTimer);
+      if (janitorTimer !== undefined) clearInterval(janitorTimer);
       deliverer.stop();
       server.stop(true);
       service.close();

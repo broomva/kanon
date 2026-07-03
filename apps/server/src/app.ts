@@ -11,7 +11,9 @@
  * for that workspace (BRO-1648 AC#2).
  */
 
-import { type EventActor, type KanonEvent, ulid } from "@kanon/core";
+import { StreamableHTTPTransport } from "@hono/mcp";
+import { type EventActor, type KanonEvent, type Surface, ulid } from "@kanon/core";
+import { createKanonMcpServer } from "@kanon/mcp";
 import { type KanonService, ServiceError } from "@kanon/service";
 import { MetaLockError } from "@kanon/store";
 import { Hono } from "hono";
@@ -21,11 +23,11 @@ import type { ApiKeyPrincipal, ServerConfig } from "./config";
 
 export type AppEnv = { Variables: { actor: EventActor } };
 
-function principalActor(principal: ApiKeyPrincipal, bootId: string): EventActor {
+function principalActor(principal: ApiKeyPrincipal, bootId: string, surface: Surface): EventActor {
   return {
     type: principal.actorType,
     id: principal.actorId,
-    surface: "http",
+    surface,
     ...(principal.sessionPrefix !== undefined
       ? { sessionId: `${principal.sessionPrefix}-${bootId}` }
       : {}),
@@ -67,7 +69,7 @@ export function createApp(service: KanonService, config: ServerConfig): Hono<App
     }),
   );
 
-  // -- bearer auth for everything under /v1 ------------------------------------
+  // -- bearer auth for /v1 and /mcp ---------------------------------------------
   // Non-disclosure by design (BRO-1648 AC#2): a missing key, an unknown key,
   // and a key valid on ANOTHER workspace's server all collapse to the SAME
   // 404 as a nonexistent route (`c.notFound()` → the app's notFound handler).
@@ -75,16 +77,35 @@ export function createApp(service: KanonService, config: ServerConfig): Hono<App
   // to "no such resource", so a caller learns nothing (not even that this is
   // a Kanon server for this workspace). One denial response is what makes the
   // non-disclosure airtight; a 401 would confirm the server + auth surface.
-  app.use("/v1/*", async (c, next) => {
+  const bearerPrincipal = (c: { req: { header(name: string): string | undefined } }) => {
     const header = c.req.header("authorization");
     const token = header?.startsWith("Bearer ") ? header.slice(7).trim() : undefined;
-    const principal =
-      token === undefined || token.length === 0 ? undefined : config.apiKeys.get(token);
+    return token === undefined || token.length === 0 ? undefined : config.apiKeys.get(token);
+  };
+  app.use("/v1/*", async (c, next) => {
+    const principal = bearerPrincipal(c);
     if (principal === undefined) {
       return c.notFound();
     }
-    c.set("actor", principalActor(principal, bootId));
+    c.set("actor", principalActor(principal, bootId, "http"));
     await next();
+  });
+
+  // -- MCP over streamable HTTP ---------------------------------------------
+  // The same linear-server-compatible surface the stdio MCP serves, mounted
+  // on the rendezvous server so one deployment exposes REST + SSE + MCP.
+  // Stateless per-request transport: a fresh Server bound to the caller's
+  // actor (events written over MCP attribute to the API key's principal,
+  // surface "mcp"), same 404-shaped denial as /v1.
+  app.all("/mcp", async (c) => {
+    const principal = bearerPrincipal(c);
+    if (principal === undefined) {
+      return c.notFound();
+    }
+    const server = createKanonMcpServer(service, principalActor(principal, bootId, "mcp"));
+    const transport = new StreamableHTTPTransport({ enableJsonResponse: true });
+    await server.connect(transport);
+    return (await transport.handleRequest(c)) ?? c.notFound();
   });
 
   // -- event transport ----------------------------------------------------------
@@ -155,6 +176,27 @@ export function createApp(service: KanonService, config: ServerConfig): Hono<App
     const result = service.relate(c.get("actor"), c.req.param("ref"), await jsonBody(c.req.raw));
     return c.json(result, result.created ? 201 : 200);
   });
+
+  app.delete("/v1/issues/:ref/relations", async (c) => {
+    const result = service.unrelate(c.get("actor"), c.req.param("ref"), await jsonBody(c.req.raw));
+    return c.json(result, 200);
+  });
+
+  // -- agent sessions + activities (M3 Phase 2) --------------------------------
+  app.get("/v1/agent-sessions", (c) => c.json({ sessions: service.agentSessions(c.req.query()) }));
+
+  app.post("/v1/agent-sessions", async (c) =>
+    c.json(service.createAgentSession(c.get("actor"), await jsonBody(c.req.raw)), 201),
+  );
+
+  app.get("/v1/agent-sessions/:ref", (c) => c.json(service.agentSessionDetail(c.req.param("ref"))));
+
+  app.post("/v1/agent-sessions/:ref/activities", async (c) =>
+    c.json(
+      service.appendAgentActivity(c.get("actor"), c.req.param("ref"), await jsonBody(c.req.raw)),
+      201,
+    ),
+  );
 
   // -- teams + projects --------------------------------------------------------
   app.get("/v1/teams", (c) => c.json({ teams: service.listTeams() }));

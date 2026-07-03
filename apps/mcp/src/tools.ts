@@ -26,6 +26,8 @@ import {
   resolveTeams,
 } from "@kanon/store";
 import {
+  formatAgentSession,
+  formatAgentSessionList,
   formatIssueDetail,
   formatIssueList,
   formatLabelList,
@@ -37,6 +39,7 @@ import {
   formatUserList,
   type UserLine,
 } from "./format";
+import type { KanonToolName } from "./kanon-schemas";
 import type { LinearToolName } from "./linear-schemas";
 
 export interface ToolContext {
@@ -46,12 +49,23 @@ export interface ToolContext {
 
 export type ToolHandler = (args: Record<string, unknown>, ctx: ToolContext) => string;
 
+export type ToolName = LinearToolName | KanonToolName;
+
 // -- arg coercion -------------------------------------------------------------
 
 function str(args: Record<string, unknown>, key: string): string | undefined {
   const value = args[key];
   if (value === undefined || value === null) return undefined;
   if (typeof value !== "string") throw new ServiceError(400, `${key} must be a string`);
+  return value;
+}
+
+/** Tri-state read for "Null to remove" args: null passes through as null. */
+function strOrNull(args: Record<string, unknown>, key: string): string | null | undefined {
+  const value = args[key];
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") throw new ServiceError(400, `${key} must be a string or null`);
   return value;
 }
 
@@ -72,8 +86,8 @@ function strArray(args: Record<string, unknown>, key: string): string[] | undefi
   return value as string[];
 }
 
-/** Map Linear's "me" sentinel to the authenticated actor id. */
-function resolveMe(ref: string | undefined, actor: EventActor): string | undefined {
+/** Map Linear's "me" sentinel to the authenticated actor id (null passes through). */
+function resolveMe(ref: string | null | undefined, actor: EventActor): string | null | undefined {
   return ref === "me" ? actor.id : ref;
 }
 
@@ -103,18 +117,21 @@ function applyRelations(
   add("blocks", strArray(args, "blocks"));
   add("blocked-by", strArray(args, "blockedBy"));
   add("related", strArray(args, "relatedTo"));
-  const removals = [
-    ...(strArray(args, "removeBlocks") ?? []),
-    ...(strArray(args, "removeBlockedBy") ?? []),
-    ...(strArray(args, "removeRelatedTo") ?? []),
-  ];
-  if (removals.length > 0) notes.push("(relation removal lands in M3 Phase 2 — skipped)");
+  const remove = (type: "blocks" | "blocked-by" | "related", targets: string[] | undefined) => {
+    for (const target of targets ?? []) {
+      const result = ctx.service.unrelate(ctx.actor, issueRef, { type, target });
+      notes.push(result.removed ? `-${type} ${target}` : `${type} ${target} (no such relation)`);
+    }
+  };
+  remove("blocks", strArray(args, "removeBlocks"));
+  remove("blocked-by", strArray(args, "removeBlockedBy"));
+  remove("related", strArray(args, "removeRelatedTo"));
   return notes;
 }
 
 // -- handlers -----------------------------------------------------------------
 
-export const TOOL_HANDLERS: Record<LinearToolName, ToolHandler> = {
+export const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
   list_issues(args, ctx) {
     // Linear sentinels: "me" → the caller, "null" → unassigned. The store has
     // no unassigned filter, so drop the arg and post-filter for a null seat.
@@ -150,37 +167,34 @@ export const TOOL_HANDLERS: Record<LinearToolName, ToolHandler> = {
 
   save_issue(args, ctx) {
     const id = str(args, "id");
-    // Linear's "Null to remove" (unassign, unparent, remove-from-project)
-    // isn't wired through the write path yet. Reject it explicitly rather than
-    // accept-and-silently-ignore, which would report a false success.
-    for (const field of ["assignee", "delegate", "project", "parentId"]) {
-      if (args[field] === null) {
-        throw new ServiceError(
-          422,
-          `clearing "${field}" via null lands in M3 Phase 2 — omit the field to leave it unchanged`,
-        );
-      }
-    }
     // project / milestone / parent apply on BOTH create and update (updateIssue
-    // resolves and writes them), so they live in the shared field set.
+    // resolves and writes them), so they live in the shared field set. The
+    // "Null to remove" seats (assignee/delegate/project/milestone/parentId)
+    // are tri-state: null flows through clean() (which drops only undefined)
+    // into updateIssue, which clears the seat.
     const shared = clean({
       title: str(args, "title"),
       description: str(args, "description"),
       priority: typeof args.priority === "number" ? args.priority : undefined,
       estimate: typeof args.estimate === "number" ? args.estimate : undefined,
       state: str(args, "state"),
-      assignee: resolveMe(str(args, "assignee"), ctx.actor),
-      delegate: resolveMe(str(args, "delegate"), ctx.actor),
-      project: str(args, "project"),
-      milestone: str(args, "milestone"),
-      parent: str(args, "parentId"),
+      assignee: resolveMe(strOrNull(args, "assignee"), ctx.actor),
+      delegate: resolveMe(strOrNull(args, "delegate"), ctx.actor),
+      project: strOrNull(args, "project"),
+      milestone: strOrNull(args, "milestone"),
+      parent: strOrNull(args, "parentId"),
       labels: strArray(args, "labels"),
     });
     let ref: string;
     if (id === undefined) {
+      // Creating: a null seat means "leave empty" — drop nulls so
+      // createIssue's optional readers see clean input.
+      const createBody = Object.fromEntries(
+        Object.entries(shared).filter(([, value]) => value !== null),
+      );
       const created = ctx.service.createIssue(
         ctx.actor,
-        clean({ ...shared, team: requireStr(args, "team") }),
+        clean({ ...createBody, team: requireStr(args, "team") }),
       );
       ref = created.id;
     } else {
@@ -219,18 +233,22 @@ export const TOOL_HANDLERS: Record<LinearToolName, ToolHandler> = {
   },
 
   save_project(args, ctx) {
-    if (str(args, "id") !== undefined) {
-      throw new ServiceError(422, "project update lands in M3 Phase 2 — create-only for now");
-    }
-    const project = ctx.service.createProject(
-      ctx.actor,
-      clean({
-        name: requireStr(args, "name"),
-        description: str(args, "description"),
-        targetDate: str(args, "targetDate"),
-      }),
-    );
-    if (project === null) throw new ServiceError(500, "project create returned no record");
+    const id = str(args, "id");
+    const fields = clean({
+      description: str(args, "description"),
+      targetDate: strOrNull(args, "targetDate"),
+      state: str(args, "state"),
+      summary: str(args, "summary"),
+      startDate: str(args, "startDate"),
+    });
+    const project =
+      id === undefined
+        ? ctx.service.createProject(ctx.actor, {
+            ...fields,
+            name: requireStr(args, "name"),
+          })
+        : ctx.service.updateProject(ctx.actor, id, clean({ ...fields, name: str(args, "name") }));
+    if (project === null) throw new ServiceError(500, "project save returned no record");
     return formatProject(project);
   },
 
@@ -241,21 +259,30 @@ export const TOOL_HANDLERS: Record<LinearToolName, ToolHandler> = {
     const comments = listComments(ctx.service.db, issue.id);
     if (comments.length === 0) return `_No comments on ${issue.identifier ?? issue.id}._`;
     const lines = comments.map(
-      (comment) => `- (${comment.createdAt}) ${comment.actorId ?? "?"}: ${comment.body ?? ""}`,
+      (comment) =>
+        `- ${comment.parentId === null ? "" : "↳ "}(${comment.createdAt}) ` +
+        `${comment.actorId ?? "?"}: ${comment.body ?? ""} \`${comment.id}\``,
     );
     return `## Comments on ${issue.identifier ?? issue.id} (${comments.length})\n\n${lines.join("\n")}`;
   },
 
   save_comment(args, ctx) {
-    if (str(args, "id") !== undefined || str(args, "parentId") !== undefined) {
-      throw new ServiceError(
-        422,
-        "comment edit/reply lands in M3 Phase 2 — new top-level issue comments only",
-      );
+    const id = str(args, "id");
+    if (id !== undefined) {
+      const updated = ctx.service.updateComment(ctx.actor, id, {
+        body: requireStr(args, "body"),
+      });
+      return `Updated comment \`${updated.id}\`.`;
     }
     const issueId = requireStr(args, "issueId");
-    const result = ctx.service.comment(ctx.actor, issueId, { body: requireStr(args, "body") });
-    return `Commented on ${issueId} (\`${result.id}\`).`;
+    const result = ctx.service.comment(
+      ctx.actor,
+      issueId,
+      clean({ body: requireStr(args, "body"), parentId: str(args, "parentId") }),
+    );
+    return result.parentId === undefined
+      ? `Commented on ${issueId} (\`${result.id}\`).`
+      : `Replied to \`${result.parentId}\` on ${issueId} (\`${result.id}\`).`;
   },
 
   list_issue_statuses(args, ctx) {
@@ -300,5 +327,48 @@ export const TOOL_HANDLERS: Record<LinearToolName, ToolHandler> = {
     if (cycles.length === 0)
       return `_No cycles for team ${teamId}._ (Kanon does not schedule cycles in v1.)`;
     return `## Cycles (${cycles.length})\n\n${cycles.map((cycle) => `- \`${cycle.id}\``).join("\n")}`;
+  },
+
+  // -- Kanon extensions: agent-session platform (M3 Phase 2) -------------------
+
+  create_agent_session(args, ctx) {
+    const result = ctx.service.createAgentSession(
+      ctx.actor,
+      clean({
+        issue: requireStr(args, "issue"),
+        agent: resolveMe(str(args, "agent"), ctx.actor),
+        prompt: str(args, "prompt"),
+      }),
+    );
+    if (result.session === null) {
+      throw new ServiceError(500, "agent session create returned no record");
+    }
+    const detail = ctx.service.agentSessionDetail(result.session.id);
+    return formatAgentSession(ctx.service.db, detail.session, detail.issue, detail.activities);
+  },
+
+  list_agent_sessions(args, ctx) {
+    const sessions = ctx.service.agentSessions(
+      clean({
+        issue: str(args, "issue"),
+        agent: resolveMe(str(args, "agent"), ctx.actor),
+        state: str(args, "state"),
+      }) as Record<string, string | undefined>,
+    );
+    return formatAgentSessionList(ctx.service.db, sessions);
+  },
+
+  get_agent_session(args, ctx) {
+    const detail = ctx.service.agentSessionDetail(requireStr(args, "id"));
+    return formatAgentSession(ctx.service.db, detail.session, detail.issue, detail.activities);
+  },
+
+  append_agent_activity(args, ctx) {
+    const result = ctx.service.appendAgentActivity(ctx.actor, requireStr(args, "sessionId"), {
+      type: requireStr(args, "type"),
+      body: requireStr(args, "body"),
+    });
+    const state = result.session?.state ?? "?";
+    return `Appended **${result.activity?.type ?? "?"}** to \`${requireStr(args, "sessionId")}\` — session is now **${state}**.`;
   },
 };
