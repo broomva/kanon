@@ -8,15 +8,15 @@
  * allocation. See README.md for the API table and deployment notes.
  */
 
+import { KanonService } from "@kanon/service";
 import type { Hono } from "hono";
 import { type AppEnv, createApp } from "./app";
 import { loadConfig, type ServerConfig } from "./config";
-import { KanonService } from "./service";
 import { WebhookDeliverer } from "./webhooks";
 
+export { KanonService, ServiceError } from "@kanon/service";
 export { createApp } from "./app";
 export { ConfigError, loadConfig, parseApiKeys, type ServerConfig } from "./config";
-export { KanonService, ServiceError } from "./service";
 export { WebhookDeliverer } from "./webhooks";
 
 export interface RunningServer {

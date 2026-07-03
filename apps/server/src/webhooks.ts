@@ -17,7 +17,7 @@
 
 import { createHmac } from "node:crypto";
 import type { KanonEvent } from "@kanon/core";
-import type { KanonService } from "./service";
+import type { KanonService } from "@kanon/service";
 
 const MAX_ATTEMPTS = 4; // 1 initial + 3 retries
 const REQUEST_TIMEOUT_MS = 10_000;

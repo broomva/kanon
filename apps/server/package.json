@@ -6,6 +6,7 @@
   "type": "module",
   "dependencies": {
     "@kanon/core": "workspace:*",
+    "@kanon/service": "workspace:*",
     "@kanon/store": "workspace:*",
     "hono": "^4.6.0"
   },

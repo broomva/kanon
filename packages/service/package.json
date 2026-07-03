@@ -1,0 +1,18 @@
+{
+  "name": "@kanon/service",
+  "version": "0.1.0",
+  "description": "Kanon service core — the one write/read funnel (validation → createEvent → appendEvents → commit → refresh → bus) shared by every protocol adapter (REST server, MCP server)",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@kanon/core": "workspace:*",
+    "@kanon/store": "workspace:*"
+  },
+  "scripts": {
+    "test": "bun test",
+    "check-types": "tsc --noEmit"
+  }
+}

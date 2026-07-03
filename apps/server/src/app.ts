@@ -12,12 +12,12 @@
  */
 
 import { type EventActor, type KanonEvent, ulid } from "@kanon/core";
+import { type KanonService, ServiceError } from "@kanon/service";
 import { MetaLockError } from "@kanon/store";
 import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import type { ApiKeyPrincipal, ServerConfig } from "./config";
-import { type KanonService, ServiceError } from "./service";
 
 export type AppEnv = { Variables: { actor: EventActor } };
 
