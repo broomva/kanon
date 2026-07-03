@@ -69,9 +69,14 @@ as protocol errors, so an agent sees the reason and can recover.
 ## Not yet (M3 Phase 2)
 
 Agent-session/activity platform (sessions + activity timeline, delegate-vs-
-assignee, stale-session janitor), streamable-HTTP transport, relation removal,
-project/comment update, comment replies, remaining Linear tools (documents,
-initiatives, status updates, cycle scheduling).
+assignee, stale-session janitor), streamable-HTTP transport, relation removal
+(`removeBlocks`/`removeBlockedBy`/`removeRelatedTo`), **null-to-remove**
+(unassign / unparent / remove-from-project — `save_issue` rejects an explicit
+`null` with a clear message rather than silently no-op'ing), `save_project`
+update, comment edit/reply, cursor pagination, and remaining Linear tools
+(documents, initiatives, status updates, cycle scheduling). `save_issue` on an
+existing issue DOES move `state`/`priority`/`assignee`/`delegate`/`labels`/
+`project`/`parent`/`milestone` (Phase 1).
 
 ## Test
 

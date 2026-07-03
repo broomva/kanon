@@ -116,11 +116,17 @@ function applyRelations(
 
 export const TOOL_HANDLERS: Record<LinearToolName, ToolHandler> = {
   list_issues(args, ctx) {
+    // Linear sentinels: "me" → the caller, "null" → unassigned. The store has
+    // no unassigned filter, so drop the arg and post-filter for a null seat.
+    const rawAssignee = str(args, "assignee");
+    const rawDelegate = str(args, "delegate");
+    const wantUnassigned = rawAssignee === "null";
+    const wantUndelegated = rawDelegate === "null";
     const query = clean({
       team: str(args, "team"),
       state: str(args, "state"),
-      assignee: resolveMe(str(args, "assignee"), ctx.actor),
-      delegate: resolveMe(str(args, "delegate"), ctx.actor),
+      assignee: wantUnassigned ? undefined : resolveMe(rawAssignee, ctx.actor),
+      delegate: wantUndelegated ? undefined : resolveMe(rawDelegate, ctx.actor),
       project: str(args, "project"),
       label: str(args, "label"),
       priority: typeof args.priority === "number" ? String(args.priority) : undefined,
@@ -131,7 +137,9 @@ export const TOOL_HANDLERS: Record<LinearToolName, ToolHandler> = {
       orderBy: str(args, "orderBy"),
       limit: typeof args.limit === "number" ? String(args.limit) : undefined,
     }) as Record<string, string | undefined>;
-    const issues = ctx.service.issues(query);
+    let issues = ctx.service.issues(query);
+    if (wantUnassigned) issues = issues.filter((issue) => issue.assigneeId === null);
+    if (wantUndelegated) issues = issues.filter((issue) => issue.delegateId === null);
     return formatIssueList(ctx.service.db, issues, "## Issues");
   },
 
@@ -142,6 +150,19 @@ export const TOOL_HANDLERS: Record<LinearToolName, ToolHandler> = {
 
   save_issue(args, ctx) {
     const id = str(args, "id");
+    // Linear's "Null to remove" (unassign, unparent, remove-from-project)
+    // isn't wired through the write path yet. Reject it explicitly rather than
+    // accept-and-silently-ignore, which would report a false success.
+    for (const field of ["assignee", "delegate", "project", "parentId"]) {
+      if (args[field] === null) {
+        throw new ServiceError(
+          422,
+          `clearing "${field}" via null lands in M3 Phase 2 — omit the field to leave it unchanged`,
+        );
+      }
+    }
+    // project / milestone / parent apply on BOTH create and update (updateIssue
+    // resolves and writes them), so they live in the shared field set.
     const shared = clean({
       title: str(args, "title"),
       description: str(args, "description"),
@@ -150,19 +171,16 @@ export const TOOL_HANDLERS: Record<LinearToolName, ToolHandler> = {
       state: str(args, "state"),
       assignee: resolveMe(str(args, "assignee"), ctx.actor),
       delegate: resolveMe(str(args, "delegate"), ctx.actor),
+      project: str(args, "project"),
+      milestone: str(args, "milestone"),
+      parent: str(args, "parentId"),
       labels: strArray(args, "labels"),
     });
     let ref: string;
     if (id === undefined) {
       const created = ctx.service.createIssue(
         ctx.actor,
-        clean({
-          ...shared,
-          team: requireStr(args, "team"),
-          project: str(args, "project"),
-          milestone: str(args, "milestone"),
-          parent: str(args, "parentId"),
-        }),
+        clean({ ...shared, team: requireStr(args, "team") }),
       );
       ref = created.id;
     } else {

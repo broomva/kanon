@@ -168,4 +168,52 @@ describe("kanon MCP server", () => {
     expect(result.isError).toBe(true);
     expect(text(result)).toContain("BRO-999");
   });
+
+  // -- P20 fixes: B1 unassigned filter, B2 project/parent update, B3 null-reject
+
+  test('list_issues assignee "null" returns unassigned issues (not an error)', async () => {
+    const { client } = await boot();
+    await call(client, "save_issue", { team: "BRO", title: "Unassigned" }); // BRO-1, no assignee
+    await call(client, "save_issue", {
+      team: "BRO",
+      title: "Assigned",
+      assignee: "someone@example.com",
+    }); // BRO-2
+
+    const result = await call(client, "list_issues", { team: "BRO", assignee: "null" });
+    expect(result.isError).toBeFalsy();
+    expect(text(result)).toContain("BRO-1");
+    expect(text(result)).not.toContain("BRO-2");
+  });
+
+  test("save_issue update sets project and parent (no silent no-op)", async () => {
+    const { client } = await boot();
+    await call(client, "save_project", { name: "Alpha" });
+    await call(client, "save_issue", { team: "BRO", title: "Parent" }); // BRO-1
+    await call(client, "save_issue", { team: "BRO", title: "Child" }); // BRO-2
+
+    const moved = await call(client, "save_issue", {
+      id: "BRO-2",
+      project: "Alpha",
+      parentId: "BRO-1",
+    });
+    expect(moved.isError).toBeFalsy();
+    const detail = text(await call(client, "get_issue", { id: "BRO-2" }));
+    expect(detail).toContain("Alpha"); // project
+    expect(detail).toContain("BRO-1"); // parent
+  });
+
+  test("save_issue null-to-remove is rejected, not silently ignored", async () => {
+    const { client } = await boot();
+    await call(client, "save_issue", {
+      team: "BRO",
+      title: "Assigned",
+      assignee: "bob@example.com",
+    });
+    const result = await call(client, "save_issue", { id: "BRO-1", assignee: null });
+    expect(result.isError).toBe(true);
+    expect(text(result)).toContain("Phase 2");
+    // The assignee was NOT cleared (no phantom success).
+    expect(text(await call(client, "get_issue", { id: "BRO-1" }))).toContain("bob");
+  });
 });
