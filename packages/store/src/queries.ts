@@ -414,19 +414,32 @@ export interface CommentRecord extends BaseRecord {
   parentId: string | null;
 }
 
+function commentRecord(row: CommentRow): CommentRecord {
+  return {
+    ...baseRecord(row),
+    issueId: row.issue_id,
+    body: row.body,
+    actorId: row.actor_id,
+    parentId: row.parent_id,
+  };
+}
+
 export function listComments(db: Database, issueId: string): CommentRecord[] {
   return db
     .query<CommentRow, [string]>(
       "SELECT * FROM comments WHERE deleted = 0 AND issue_id = ? ORDER BY created_at, id",
     )
     .all(issueId)
-    .map((row) => ({
-      ...baseRecord(row),
-      issueId: row.issue_id,
-      body: row.body,
-      actorId: row.actor_id,
-      parentId: row.parent_id,
-    }));
+    .map(commentRecord);
+}
+
+/** One non-deleted comment by ULID. */
+export function getComment(db: Database, id: string): CommentRecord | undefined {
+  if (!ULID_PATTERN.test(id)) return undefined;
+  const row = db
+    .query<CommentRow, [string]>("SELECT * FROM comments WHERE deleted = 0 AND id = ?")
+    .get(id);
+  return row === null ? undefined : commentRecord(row);
 }
 
 interface RelationRow extends BaseRow {
@@ -729,4 +742,99 @@ export function readyIssues(db: Database, team?: string): IssueRecord[] {
     .query<IssueRow, Binding[]>(sql)
     .all(...params)
     .map((row) => issueRecord(db, row));
+}
+
+// ---------------------------------------------------------------------------
+// Agent sessions + activities
+// ---------------------------------------------------------------------------
+
+interface AgentSessionRow extends BaseRow {
+  issue_id: string | null;
+  actor_id: string | null;
+  state: string | null;
+}
+
+export interface AgentSessionRecord extends BaseRecord {
+  issueId: string | null;
+  actorId: string | null;
+  state: string | null;
+}
+
+function agentSessionRecord(row: AgentSessionRow): AgentSessionRecord {
+  return {
+    ...baseRecord(row),
+    issueId: row.issue_id,
+    actorId: row.actor_id,
+    state: row.state,
+  };
+}
+
+export interface AgentSessionFilters {
+  issueId?: string;
+  actorId?: string;
+  state?: string;
+}
+
+/** Non-deleted agent sessions, ULID (= creation) order. */
+export function listAgentSessions(
+  db: Database,
+  filters: AgentSessionFilters = {},
+): AgentSessionRecord[] {
+  const where: string[] = ["deleted = 0"];
+  const params: Binding[] = [];
+  if (filters.issueId !== undefined) {
+    where.push("issue_id = ?");
+    params.push(filters.issueId);
+  }
+  if (filters.actorId !== undefined) {
+    where.push("actor_id = ?");
+    params.push(filters.actorId);
+  }
+  if (filters.state !== undefined) {
+    where.push("state = ?");
+    params.push(filters.state);
+  }
+  return db
+    .query<AgentSessionRow, Binding[]>(
+      `SELECT * FROM agent_sessions WHERE ${where.join(" AND ")} ORDER BY id`,
+    )
+    .all(...params)
+    .map(agentSessionRecord);
+}
+
+/** One agent session by ULID (sessions have no display identifier). */
+export function getAgentSession(db: Database, id: string): AgentSessionRecord | undefined {
+  if (!ULID_PATTERN.test(id)) return undefined;
+  const row = db
+    .query<AgentSessionRow, [string]>("SELECT * FROM agent_sessions WHERE id = ?")
+    .get(id);
+  return row === null ? undefined : agentSessionRecord(row);
+}
+
+interface AgentActivityRow extends BaseRow {
+  session_id: string | null;
+  activity_type: string | null;
+  body: string | null;
+}
+
+export interface AgentActivityRecord extends BaseRecord {
+  sessionId: string | null;
+  /** One of AGENT_ACTIVITY_TYPES (free text in the row; writers validate). */
+  type: string | null;
+  body: string | null;
+}
+
+/** A session's non-deleted activities, ULID (= creation) order — the timeline. */
+export function listAgentActivities(db: Database, sessionId: string): AgentActivityRecord[] {
+  return db
+    .query<AgentActivityRow, [string]>(
+      "SELECT * FROM agent_activities WHERE deleted = 0 AND session_id = ? ORDER BY id",
+    )
+    .all(sessionId)
+    .map((row) => ({
+      ...baseRecord(row),
+      sessionId: row.session_id,
+      type: row.activity_type,
+      body: row.body,
+    }));
 }

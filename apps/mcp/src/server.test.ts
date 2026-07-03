@@ -203,17 +203,137 @@ describe("kanon MCP server", () => {
     expect(detail).toContain("BRO-1"); // parent
   });
 
-  test("save_issue null-to-remove is rejected, not silently ignored", async () => {
+  test("save_issue null-to-remove clears the seat (Phase 2)", async () => {
     const { client } = await boot();
     await call(client, "save_issue", {
       team: "BRO",
       title: "Assigned",
       assignee: "bob@example.com",
     });
-    const result = await call(client, "save_issue", { id: "BRO-1", assignee: null });
-    expect(result.isError).toBe(true);
-    expect(text(result)).toContain("Phase 2");
-    // The assignee was NOT cleared (no phantom success).
     expect(text(await call(client, "get_issue", { id: "BRO-1" }))).toContain("bob");
+    const result = await call(client, "save_issue", { id: "BRO-1", assignee: null });
+    expect(result.isError).toBeFalsy();
+    expect(text(await call(client, "get_issue", { id: "BRO-1" }))).not.toContain("bob");
+  });
+
+  test("save_issue removeBlocks removes the relation, idempotently (Phase 2)", async () => {
+    const { client } = await boot();
+    await call(client, "save_issue", { team: "BRO", title: "Blocker" }); // BRO-1
+    await call(client, "save_issue", { team: "BRO", title: "Blocked", blockedBy: ["BRO-1"] });
+    expect(text(await call(client, "get_issue", { id: "BRO-2" }))).toContain("blocked by BRO-1");
+    const removed = await call(client, "save_issue", { id: "BRO-2", removeBlockedBy: ["BRO-1"] });
+    expect(removed.isError).toBeFalsy();
+    expect(text(removed)).toContain("-blocked-by BRO-1");
+    expect(text(await call(client, "get_issue", { id: "BRO-2" }))).not.toContain("blocked by");
+    // Removing a relation that no longer exists is reported honestly.
+    const again = await call(client, "save_issue", { id: "BRO-2", removeBlockedBy: ["BRO-1"] });
+    expect(text(again)).toContain("no such relation");
+  });
+
+  test("save_project update + save_comment edit/reply (Phase 2)", async () => {
+    const { client } = await boot();
+    await call(client, "save_project", { name: "Kanon" });
+    const updated = await call(client, "save_project", { id: "Kanon", state: "started" });
+    expect(updated.isError).toBeFalsy();
+    expect(text(updated)).toContain("started");
+
+    await call(client, "save_issue", { team: "BRO", title: "Talk" });
+    const first = await call(client, "save_comment", { issueId: "BRO-1", body: "top-level" });
+    expect(first.isError).toBeFalsy();
+    const commentId = /`([0-9A-HJKMNP-TV-Z]{26})`/.exec(text(first))?.[1];
+    expect(commentId).toBeDefined();
+    const reply = await call(client, "save_comment", {
+      issueId: "BRO-1",
+      body: "a reply",
+      parentId: commentId,
+    });
+    expect(reply.isError).toBeFalsy();
+    const edit = await call(client, "save_comment", { id: commentId, body: "edited body" });
+    expect(edit.isError).toBeFalsy();
+    const listed = text(await call(client, "list_comments", { issueId: "BRO-1" }));
+    expect(listed).toContain("edited body");
+    expect(listed).toContain("↳");
+    expect(listed).toContain("a reply");
+  });
+});
+
+describe("agent-session platform (M3 Phase 2)", () => {
+  test("delegation E2E: session lifecycle + live activity timeline", async () => {
+    const { client, service } = await boot();
+    await call(client, "save_issue", { team: "BRO", title: "Ship the thing" });
+
+    // Delegate: session starts pending; the delegate seat re-points to the agent.
+    const created = await call(client, "create_agent_session", {
+      issue: "BRO-1",
+      agent: "worker@agents.local",
+      prompt: "Please ship the thing end to end.",
+    });
+    expect(created.isError).toBeFalsy();
+    expect(text(created)).toContain("**State**: pending");
+    expect(text(await call(client, "get_issue", { id: "BRO-1" }))).toContain("worker@agents.local");
+    const sessionId = /`([0-9A-HJKMNP-TV-Z]{26})`/.exec(text(created))?.[1];
+    expect(sessionId).toBeDefined();
+
+    // The agent works: thought/action → active, elicitation → awaitingInput.
+    const act = (type: string, body: string) =>
+      call(client, "append_agent_activity", { sessionId, type, body });
+    expect(text(await act("thought", "Reading the code."))).toContain("**active**");
+    expect(text(await act("action", "Ran the tests."))).toContain("**active**");
+    expect(text(await act("elicitation", "Deploy to prod too?"))).toContain("**awaitingInput**");
+
+    // The delegator answers: prompt → active; the agent responds → complete.
+    expect(text(await act("prompt", "Yes, deploy."))).toContain("**active**");
+    expect(text(await act("response", "Shipped and deployed."))).toContain("**complete**");
+
+    // The timeline holds all six activities in append order.
+    const detail = text(await call(client, "get_agent_session", { id: sessionId }));
+    expect(detail).toContain("**State**: complete");
+    expect(detail).toContain("Timeline (6)");
+    const positions = [
+      "Please ship the thing",
+      "Reading the code.",
+      "Ran the tests.",
+      "Deploy to prod too?",
+      "Yes, deploy.",
+      "Shipped and deployed.",
+    ].map((needle) => detail.indexOf(needle));
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect([...positions].sort((a, b) => a - b)).toEqual(positions);
+
+    // Listing filters by state + agent.
+    const listed = text(
+      await call(client, "list_agent_sessions", {
+        state: "complete",
+        agent: "worker@agents.local",
+      }),
+    );
+    expect(listed).toContain(sessionId as string);
+    expect(text(await call(client, "list_agent_sessions", { state: "pending" }))).toContain(
+      "_No agent sessions._",
+    );
+
+    // Everything flowed through the one event log — no side store.
+    expect(service.eventCount()).toBeGreaterThan(6);
+  });
+
+  test("append_agent_activity validates type and session ref", async () => {
+    const { client } = await boot();
+    await call(client, "save_issue", { team: "BRO", title: "X" });
+    const created = await call(client, "create_agent_session", { issue: "BRO-1" });
+    const sessionId = /`([0-9A-HJKMNP-TV-Z]{26})`/.exec(text(created))?.[1];
+    const bad = await call(client, "append_agent_activity", {
+      sessionId,
+      type: "yelling",
+      body: "?!",
+    });
+    expect(bad.isError).toBe(true);
+    expect(text(bad)).toContain("type must be one of");
+    const missing = await call(client, "append_agent_activity", {
+      sessionId: "01AAAAAAAAAAAAAAAAAAAAAAAA",
+      type: "thought",
+      body: "hm",
+    });
+    expect(missing.isError).toBe(true);
+    expect(text(missing)).toContain("no agent session");
   });
 });

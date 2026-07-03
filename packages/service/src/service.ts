@@ -20,25 +20,36 @@
  */
 
 import {
+  AGENT_ACTIVITY_TYPES,
+  AGENT_SESSION_STATES,
+  type AgentActivityType,
+  type AgentSessionState,
   createEvent,
   type EventActor,
   type KanonEvent,
   MODELS,
   type Model,
+  nextSessionState,
   type Op,
   ULID_PATTERN,
   ulid,
   validateEvent,
 } from "@kanon/core";
 import {
+  type AgentActivityRecord,
+  type AgentSessionRecord,
   allocateDisplayNumber,
   appendEvents,
   type CommentRecord,
   DEFAULT_STATES,
   findRelation,
+  getAgentSession,
+  getComment,
   getIssue,
   type IssueFilters,
   type IssueRecord,
+  listAgentActivities,
+  listAgentSessions,
   listComments,
   listIssues,
   listModelEntities,
@@ -135,6 +146,18 @@ function requireString(body: Record<string, unknown>, field: string): string {
   if (value === undefined || value.length === 0) {
     throw new ServiceError(400, `${field} is required (non-empty string)`);
   }
+  return value;
+}
+
+/**
+ * Tri-state read for null-to-remove fields: absent → undefined (leave
+ * unchanged), explicit null → null (clear the seat), string → the reference.
+ */
+function stringOrNull(body: Record<string, unknown>, field: string): string | null | undefined {
+  const value = body[field];
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  if (typeof value !== "string") throw new ServiceError(400, `${field} must be a string or null`);
   return value;
 }
 
@@ -651,12 +674,49 @@ export class KanonService {
             name,
             description: optionalString(body, "description"),
             targetDate: optionalString(body, "targetDate"),
+            // No dedicated columns — preserved via the data_json overflow.
+            summary: optionalString(body, "summary"),
+            startDate: optionalString(body, "startDate"),
           }),
         },
       ],
       `kanon project create ${name}`,
     );
     return resolveProjects(this.db, projectId)[0] ?? null;
+  }
+
+  /**
+   * PATCH-equivalent project update: name (uniqueness enforced), description,
+   * state, targetDate (tri-state — explicit null clears the date).
+   */
+  updateProject(actor: EventActor, ref: string, raw: unknown): ProjectRecord | null {
+    const body = requireBody(raw);
+    const project = this.requireProjectRef(ref);
+    const name = optionalString(body, "name");
+    if (name !== undefined) {
+      const clash = resolveProjects(this.db, name).filter((match) => match.id !== project.id);
+      if (clash.length > 0) {
+        throw new ServiceError(409, `a project named "${name}" already exists`);
+      }
+    }
+    const data = compact({
+      name,
+      description: optionalString(body, "description"),
+      state: optionalString(body, "state"),
+      targetDate: stringOrNull(body, "targetDate"),
+      // No dedicated columns — preserved via the data_json overflow.
+      summary: optionalString(body, "summary"),
+      startDate: optionalString(body, "startDate"),
+    });
+    if (Object.keys(data).length === 0) {
+      throw new ServiceError(400, "update requires at least one field");
+    }
+    this.appendAsActor(
+      actor,
+      [{ op: "update", model: "project", modelId: project.id, data }],
+      `kanon project update ${project.name ?? project.id}`,
+    );
+    return resolveProjects(this.db, project.id)[0] ?? null;
   }
 
   // -- issues -------------------------------------------------------------------
@@ -852,7 +912,13 @@ export class KanonService {
     };
   }
 
-  /** PATCH /v1/issues/:ref — per-field LWW update event. */
+  /**
+   * PATCH /v1/issues/:ref — per-field LWW update event. The reference seats
+   * (assignee, delegate, project, parent, milestone) are tri-state: absent
+   * leaves the seat, a string re-points it, an explicit null CLEARS it
+   * (Linear's "null to remove" — the update event carries `field: null`,
+   * which replay applies per-field LWW like any other write).
+   */
   updateIssue(actor: EventActor, ref: string, raw: unknown): IssueRecord | null {
     const body = requireBody(raw);
     const issue = this.requireIssueRef(ref, 404);
@@ -861,20 +927,32 @@ export class KanonService {
     const stateRef = optionalString(body, "state");
     const stateId =
       stateRef === undefined ? undefined : this.requireStateRef(stateRef, issue.teamId ?? "").id;
-    const assigneeRef = optionalString(body, "assignee");
+    const assigneeRef = stringOrNull(body, "assignee");
     const assigneeId =
-      assigneeRef === undefined ? undefined : this.actorRefEntity(assigneeRef, "assignee", mints);
-    const delegateRef = optionalString(body, "delegate");
+      assigneeRef === undefined || assigneeRef === null
+        ? assigneeRef
+        : this.actorRefEntity(assigneeRef, "assignee", mints);
+    const delegateRef = stringOrNull(body, "delegate");
     const delegateId =
-      delegateRef === undefined ? undefined : this.actorRefEntity(delegateRef, "delegate", mints);
-    const projectRef = optionalString(body, "project");
-    const projectId = projectRef === undefined ? undefined : this.requireProjectRef(projectRef).id;
-    const parentRef = optionalString(body, "parent");
-    const parentId = parentRef === undefined ? undefined : this.requireIssueRef(parentRef, 400).id;
-    const milestoneRef = optionalString(body, "milestone");
-    let milestoneId: string | undefined;
-    if (milestoneRef !== undefined) {
-      const matches = resolveMilestones(this.db, milestoneRef, projectId);
+      delegateRef === undefined || delegateRef === null
+        ? delegateRef
+        : this.actorRefEntity(delegateRef, "delegate", mints);
+    const projectRef = stringOrNull(body, "project");
+    const projectId =
+      projectRef === undefined || projectRef === null
+        ? projectRef
+        : this.requireProjectRef(projectRef).id;
+    const parentRef = stringOrNull(body, "parent");
+    const parentId =
+      parentRef === undefined || parentRef === null
+        ? parentRef
+        : this.requireIssueRef(parentRef, 400).id;
+    const milestoneRef = stringOrNull(body, "milestone");
+    let milestoneId: string | null | undefined;
+    if (milestoneRef === null) {
+      milestoneId = null;
+    } else if (milestoneRef !== undefined) {
+      const matches = resolveMilestones(this.db, milestoneRef, projectId ?? undefined);
       const first = matches[0];
       if (matches.length === 1 && first !== undefined) {
         milestoneId = first.id;
@@ -941,15 +1019,37 @@ export class KanonService {
     return getIssue(this.db, issue.id) ?? null;
   }
 
-  /** POST /v1/issues/:ref/comments — actor entity minted on first use. */
+  /**
+   * POST /v1/issues/:ref/comments — actor entity minted on first use.
+   * `parentId` makes it a reply; threads nest ONE level (Linear semantics),
+   * so the parent must itself be a top-level comment on the same issue.
+   */
   comment(
     actor: EventActor,
     ref: string,
     raw: unknown,
-  ): { id: string; issueId: string; body: string; actorId: string } {
+  ): { id: string; issueId: string; body: string; actorId: string; parentId?: string } {
     const body = requireBody(raw);
     const issue = this.requireIssueRef(ref, 404);
     const text = requireString(body, "body");
+    const parentRef = optionalString(body, "parentId");
+    let parentId: string | undefined;
+    if (parentRef !== undefined) {
+      if (!ULID_PATTERN.test(parentRef)) {
+        throw new ServiceError(400, "parentId must be a comment ULID");
+      }
+      const parent = getComment(this.db, parentRef);
+      if (parent === undefined || parent.issueId !== issue.id) {
+        throw new ServiceError(400, `no comment ${parentRef} on ${issue.identifier ?? issue.id}`);
+      }
+      if (parent.parentId !== null) {
+        throw new ServiceError(
+          400,
+          "replies nest one level — reply to the thread's top-level comment",
+        );
+      }
+      parentId = parent.id;
+    }
     const { id: actorId, mint } = this.authedActorEntity(actor);
     const commentId = ulid();
     this.appendAsActor(
@@ -960,12 +1060,41 @@ export class KanonService {
           op: "create",
           model: "comment",
           modelId: commentId,
-          data: { issueId: issue.id, body: text, actorId },
+          data: compact({ issueId: issue.id, body: text, actorId, parentId }),
         },
       ],
       `kanon issue comment ${issue.identifier ?? issue.id}`,
     );
-    return { id: commentId, issueId: issue.id, body: text, actorId };
+    return {
+      id: commentId,
+      issueId: issue.id,
+      body: text,
+      actorId,
+      ...(parentId === undefined ? {} : { parentId }),
+    };
+  }
+
+  /** Edit a comment's body (per-field LWW; authorship is logged, not enforced). */
+  updateComment(
+    actor: EventActor,
+    commentId: string,
+    raw: unknown,
+  ): { id: string; issueId: string | null; body: string } {
+    const body = requireBody(raw);
+    if (!ULID_PATTERN.test(commentId)) {
+      throw new ServiceError(400, "comment id must be a ULID");
+    }
+    const existing = getComment(this.db, commentId);
+    if (existing === undefined) {
+      throw new ServiceError(404, `no comment ${commentId}`);
+    }
+    const text = requireString(body, "body");
+    this.appendAsActor(
+      actor,
+      [{ op: "update", model: "comment", modelId: commentId, data: { body: text } }],
+      `kanon comment update ${commentId}`,
+    );
+    return { id: commentId, issueId: existing.issueId, body: text };
   }
 
   /**
@@ -974,16 +1103,15 @@ export class KanonService {
    * related_issue_id: B}` means A BLOCKS B; `blocked-by` flips it; `related`
    * is symmetric.
    */
-  relate(
-    actor: EventActor,
-    ref: string,
+  /** Parse {type, target} into the stored direction + find the existing edge. */
+  private relationSpec(
+    issue: IssueRecord,
     raw: unknown,
   ): {
-    created: boolean;
-    relation: { id: string; type: string; issueId: string; relatedIssueId: string };
+    spec: { relType: "blocks" | "related"; issueId: string; relatedIssueId: string };
+    existing: RelationRecord | undefined;
   } {
     const body = requireBody(raw);
-    const issue = this.requireIssueRef(ref, 404);
     const type = requireString(body, "type");
     const target = this.requireIssueRef(requireString(body, "target"), 400);
     let spec: { relType: "blocks" | "related"; issueId: string; relatedIssueId: string };
@@ -1004,6 +1132,19 @@ export class KanonService {
       // `related` is symmetric — either stored direction is the same edge.
       existing = findRelation(this.db, spec.relType, spec.relatedIssueId, spec.issueId);
     }
+    return { spec, existing };
+  }
+
+  relate(
+    actor: EventActor,
+    ref: string,
+    raw: unknown,
+  ): {
+    created: boolean;
+    relation: { id: string; type: string; issueId: string; relatedIssueId: string };
+  } {
+    const issue = this.requireIssueRef(ref, 404);
+    const { spec, existing } = this.relationSpec(issue, raw);
     if (existing !== undefined) {
       return {
         created: false,
@@ -1036,6 +1177,258 @@ export class KanonService {
         issueId: spec.issueId,
         relatedIssueId: spec.relatedIssueId,
       },
+    };
+  }
+
+  /**
+   * The mirror of relate(): tombstone the matching edge via an `unrelate`
+   * event. Idempotent — removing an edge that doesn't exist reports
+   * `removed: false` (the desired end-state already holds) rather than
+   * erroring or pretending a write happened.
+   */
+  unrelate(
+    actor: EventActor,
+    ref: string,
+    raw: unknown,
+  ): {
+    removed: boolean;
+    relation?: { id: string; type: string; issueId: string; relatedIssueId: string };
+  } {
+    const issue = this.requireIssueRef(ref, 404);
+    const { spec, existing } = this.relationSpec(issue, raw);
+    if (existing === undefined) {
+      return { removed: false };
+    }
+    this.appendAsActor(
+      actor,
+      [{ op: "unrelate", model: "issue_relation", modelId: existing.id, data: {} }],
+      `kanon issue unrelate ${issue.identifier ?? issue.id}`,
+    );
+    return {
+      removed: true,
+      relation: {
+        id: existing.id,
+        type: existing.relType ?? spec.relType,
+        issueId: existing.issueId ?? spec.issueId,
+        relatedIssueId: existing.relatedIssueId ?? spec.relatedIssueId,
+      },
+    };
+  }
+
+  // -- agent sessions + activities (M3 Phase 2, BRO-1649) --------------------
+  //
+  // The delegation platform: an agent_session binds an agent actor to an
+  // issue; agent_activity events are the live timeline. Session state is
+  // DERIVED — it moves only via activity appends (nextSessionState) and the
+  // stale janitor, never set directly, so the activity log IS the source of
+  // truth for where a delegation stands.
+
+  private requireSessionRef(ref: string): AgentSessionRecord {
+    if (!ULID_PATTERN.test(ref)) {
+      throw new ServiceError(400, "agent session id must be a 26-char ULID");
+    }
+    const session = getAgentSession(this.db, ref);
+    if (session === undefined || session.deleted) {
+      throw new ServiceError(404, `no agent session ${ref}`);
+    }
+    return session;
+  }
+
+  /**
+   * POST /v1/agent-sessions {issue, agent?, prompt?} — delegate an issue to
+   * an agent. The session starts `pending` (delegated, not picked up); the
+   * optional prompt is the delegation brief, recorded as the first activity.
+   * Delegate-vs-assignee: the issue's delegate seat is re-pointed at the
+   * session's agent (the assignee — the human owner — is untouched).
+   */
+  createAgentSession(
+    actor: EventActor,
+    raw: unknown,
+  ): { session: AgentSessionRecord | null; activity: AgentActivityRecord | null } {
+    const body = requireBody(raw);
+    const issue = this.requireIssueRef(requireString(body, "issue"), 400);
+    const prompt = optionalString(body, "prompt");
+    const mints: EventInput[] = [];
+    const agentRef = optionalString(body, "agent");
+    let agentId: string;
+    if (agentRef !== undefined) {
+      agentId = this.actorRefEntity(agentRef, "delegate", mints);
+    } else {
+      // No agent named: the caller delegates to itself (an agent MCP
+      // opening its own session on pickup).
+      const authed = this.authedActorEntity(actor);
+      agentId = authed.id;
+      if (authed.mint !== undefined) mints.push(authed.mint);
+    }
+    const sessionId = ulid();
+    const activityId = prompt === undefined ? undefined : ulid();
+    const inputs: EventInput[] = [
+      ...mints,
+      {
+        op: "create",
+        model: "agent_session",
+        modelId: sessionId,
+        data: { issueId: issue.id, actorId: agentId, state: "pending" },
+      },
+    ];
+    if (prompt !== undefined && activityId !== undefined) {
+      inputs.push({
+        op: "create",
+        model: "agent_activity",
+        modelId: activityId,
+        data: { sessionId, type: "prompt", body: prompt },
+      });
+    }
+    if (issue.delegateId !== agentId) {
+      inputs.push({
+        op: "update",
+        model: "issue",
+        modelId: issue.id,
+        data: { delegateId: agentId },
+      });
+    }
+    this.appendAsActor(actor, inputs, `kanon agent-session create ${issue.identifier ?? issue.id}`);
+    return {
+      session: getAgentSession(this.db, sessionId) ?? null,
+      activity:
+        activityId === undefined
+          ? null
+          : (listAgentActivities(this.db, sessionId).find((entry) => entry.id === activityId) ??
+            null),
+    };
+  }
+
+  /** GET /v1/agent-sessions — filter by issue ref, agent ref, session state. */
+  agentSessions(query: Record<string, string | undefined>): AgentSessionRecord[] {
+    const state = query.state;
+    if (state !== undefined && !AGENT_SESSION_STATES.includes(state as AgentSessionState)) {
+      throw new ServiceError(400, `state must be one of ${AGENT_SESSION_STATES.join(", ")}`);
+    }
+    const issueId =
+      query.issue === undefined ? undefined : this.requireIssueRef(query.issue, 400).id;
+    let actorId: string | undefined;
+    if (query.agent !== undefined) {
+      const matches = resolveActors(this.db, query.agent);
+      const first = matches[0];
+      if (matches.length === 0) {
+        throw new ServiceError(400, `no actor matching "${query.agent}"`);
+      }
+      if (matches.length > 1 || first === undefined) {
+        throw new ServiceError(
+          400,
+          `ambiguous agent "${query.agent}" — candidates: ${describeCandidates(matches)}`,
+        );
+      }
+      actorId = first.id;
+    }
+    return listAgentSessions(this.db, {
+      ...(issueId !== undefined && { issueId }),
+      ...(actorId !== undefined && { actorId }),
+      ...(state !== undefined && { state }),
+    });
+  }
+
+  /** GET /v1/agent-sessions/:ref — session + its issue + the activity timeline. */
+  agentSessionDetail(ref: string): {
+    session: AgentSessionRecord;
+    issue: IssueRecord | null;
+    activities: AgentActivityRecord[];
+  } {
+    const session = this.requireSessionRef(ref);
+    const issue = session.issueId === null ? null : (getIssue(this.db, session.issueId) ?? null);
+    return { session, issue, activities: listAgentActivities(this.db, session.id) };
+  }
+
+  /**
+   * POST /v1/agent-sessions/:ref/activities {type, body} — append to the
+   * timeline and move the derived session state (nextSessionState is total:
+   * thought/action → active, elicitation → awaitingInput, prompt answers →
+   * active, response → complete, error → error).
+   */
+  appendAgentActivity(
+    actor: EventActor,
+    ref: string,
+    raw: unknown,
+  ): { activity: AgentActivityRecord | null; session: AgentSessionRecord | null } {
+    const body = requireBody(raw);
+    const session = this.requireSessionRef(ref);
+    const type = requireString(body, "type");
+    if (!AGENT_ACTIVITY_TYPES.includes(type as AgentActivityType)) {
+      throw new ServiceError(400, `type must be one of ${AGENT_ACTIVITY_TYPES.join(", ")}`);
+    }
+    const text = requireString(body, "body");
+    const current = AGENT_SESSION_STATES.includes(session.state as AgentSessionState)
+      ? (session.state as AgentSessionState)
+      : "pending";
+    const next = nextSessionState(current, type as AgentActivityType);
+    const activityId = ulid();
+    const inputs: EventInput[] = [
+      {
+        op: "create",
+        model: "agent_activity",
+        modelId: activityId,
+        data: { sessionId: session.id, type, body: text },
+      },
+    ];
+    if (next !== current) {
+      inputs.push({
+        op: "update",
+        model: "agent_session",
+        modelId: session.id,
+        data: { state: next },
+      });
+    }
+    this.appendAsActor(actor, inputs, `kanon agent-activity ${type} ${session.id}`);
+    return {
+      activity:
+        listAgentActivities(this.db, session.id).find((entry) => entry.id === activityId) ?? null,
+      session: getAgentSession(this.db, session.id) ?? null,
+    };
+  }
+
+  /**
+   * The stale-session janitor: live sessions (pending / active /
+   * awaitingInput) whose last movement — session update or newest activity —
+   * is older than `olderThanMs` get marked `stale` in one batch. Complete,
+   * error, and already-stale sessions are terminal for the janitor's
+   * purposes and untouched (a follow-up prompt can still reactivate them).
+   */
+  markStaleSessions(actor: EventActor, olderThanMs: number): { staled: AgentSessionRecord[] } {
+    if (!Number.isFinite(olderThanMs) || olderThanMs <= 0) {
+      throw new ServiceError(400, "olderThanMs must be a positive number of milliseconds");
+    }
+    const cutoff = Date.now() - olderThanMs;
+    const staleIds: string[] = [];
+    for (const state of ["pending", "active", "awaitingInput"]) {
+      for (const session of listAgentSessions(this.db, { state })) {
+        const lastMoved = Math.max(
+          Date.parse(session.updatedAt),
+          ...listAgentActivities(this.db, session.id).map((entry) => Date.parse(entry.createdAt)),
+        );
+        if (Number.isFinite(lastMoved) && lastMoved < cutoff) {
+          staleIds.push(session.id);
+        }
+      }
+    }
+    if (staleIds.length === 0) {
+      return { staled: [] };
+    }
+    this.appendAsActor(
+      actor,
+      staleIds.map(
+        (id): EventInput => ({
+          op: "update",
+          model: "agent_session",
+          modelId: id,
+          data: { state: "stale" },
+        }),
+      ),
+      `kanon agent-session janitor staled ${staleIds.length}`,
+    );
+    return {
+      staled: staleIds
+        .map((id) => getAgentSession(this.db, id))
+        .filter((session): session is AgentSessionRecord => session !== undefined),
     };
   }
 

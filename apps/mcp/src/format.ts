@@ -8,6 +8,8 @@
 
 import type { Database } from "bun:sqlite";
 import {
+  type AgentActivityRecord,
+  type AgentSessionRecord,
   type CommentRecord,
   getIssue,
   type IssueRecord,
@@ -195,6 +197,44 @@ export function formatUserList(users: UserLine[]): string {
 /** Confirmation line after a write. */
 export function formatSaved(kind: string, ref: string, id: string): string {
   return `Saved ${kind} **${ref}** (\`${id}\`).`;
+}
+
+/** One-line session summary: issue, agent, state. */
+export function agentSessionLine(db: Database, session: AgentSessionRecord): string {
+  const issue = session.issueId === null ? "—" : resolveIdentifier(db, session.issueId);
+  const agent = actorName(db, session.actorId) ?? "?";
+  return `- \`${session.id}\` **${issue}** → ${agent} — **${session.state ?? "?"}** (updated ${session.updatedAt})`;
+}
+
+export function formatAgentSessionList(db: Database, sessions: AgentSessionRecord[]): string {
+  if (sessions.length === 0) return "_No agent sessions._";
+  return `## Agent sessions (${sessions.length})\n\n${sessions
+    .map((session) => agentSessionLine(db, session))
+    .join("\n")}`;
+}
+
+export function formatAgentSession(
+  db: Database,
+  session: AgentSessionRecord,
+  issue: IssueRecord | null,
+  activities: AgentActivityRecord[],
+): string {
+  const issueRef = issue === null ? (session.issueId ?? "—") : (issue.identifier ?? issue.id);
+  const lines = [
+    `# Agent session \`${session.id}\``,
+    "",
+    `- **Issue**: ${issueRef}${issue?.title ? ` — ${issue.title}` : ""}`,
+    `- **Agent**: ${actorName(db, session.actorId) ?? "?"}`,
+    `- **State**: ${session.state ?? "?"}`,
+    `- **Created**: ${session.createdAt} · **Updated**: ${session.updatedAt}`,
+  ];
+  if (activities.length > 0) {
+    lines.push("", `## Timeline (${activities.length})`, "");
+    for (const activity of activities) {
+      lines.push(`- **${activity.type ?? "?"}** (${activity.createdAt}): ${activity.body ?? ""}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 // Re-export the resolvers a handler may need for team/project lookups.

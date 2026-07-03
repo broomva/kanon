@@ -46,6 +46,8 @@ N deployments with N volumes.
 | `KANON_GIT_REMOTE_SYNC` | `1` | `1`: push after each write commit; pull `--rebase` + refresh on startup and every interval. `0`: remote-less (tests, air-gapped) |
 | `KANON_SYNC_INTERVAL` | `30` | seconds between pull cycles |
 | `KANON_WEBHOOK_INTERVAL_MS` | `500` | webhook delivery-loop tick |
+| `KANON_SESSION_STALE_MS` | `1800000` | agent sessions still `pending`/`active`/`awaitingInput` with no movement for this long are marked `stale` by the janitor (30 min default; `0` disables it) |
+| `KANON_SESSION_JANITOR_INTERVAL_MS` | `60000` | janitor tick |
 | `PORT` | `3000` | listen port (`0` = ephemeral) |
 
 ## Auth model
@@ -79,13 +81,19 @@ mismatch / unallocatable · `503` allocation-lock timeout.
 | `GET /v1/issues?…` | ✓ | filters mirror `@kanon/store`: `team state assignee delegate project label priority parent updatedAfter updatedBefore query includeArchived orderBy orderDir limit offset` |
 | `GET /v1/issues/:ref` | ✓ | `{issue, state, comments, relations}`; `:ref` is a ULID or `TEAM-123` |
 | `POST /v1/issues` | ✓ | `{team, title, description?, priority?, estimate?, state?, assignee?, delegate?, project?, milestone?, parent?, labels?}` — allocates the display number under the meta lock → `{id, identifier, number, issue}` |
-| `PATCH /v1/issues/:ref` | ✓ | `{state?, title?, description?, priority?, estimate?, assignee?, delegate?, labels?, addLabels?, removeLabels?}` — `state` accepts a type name (`started`), exact name, or ULID |
-| `POST /v1/issues/:ref/comments` | ✓ | `{body}` — the key's actor entity is minted on first use |
+| `PATCH /v1/issues/:ref` | ✓ | `{state?, title?, description?, priority?, estimate?, assignee?, delegate?, project?, milestone?, parent?, labels?, addLabels?, removeLabels?}` — `state` accepts a type name (`started`), exact name, or ULID; the reference seats (`assignee`/`delegate`/`project`/`milestone`/`parent`) are **tri-state**: omit = leave, string = re-point, explicit `null` = clear |
+| `POST /v1/issues/:ref/comments` | ✓ | `{body, parentId?}` — the key's actor entity is minted on first use; `parentId` makes it a one-level reply |
 | `POST /v1/issues/:ref/relations` | ✓ | `{type: "blocks"\|"blocked-by"\|"related", target}` — idempotent (200 + `created:false` on an existing edge) |
+| `DELETE /v1/issues/:ref/relations` | ✓ | `{type, target}` — tombstone the matching edge; idempotent (`{removed:false}` when it doesn't exist) |
 | `GET /v1/ready?team=` | ✓ | unblocked backlog/unstarted work — the agent queue |
+| `GET /v1/agent-sessions?issue=&agent=&state=` | ✓ | list agent sessions → `{sessions}` |
+| `POST /v1/agent-sessions` | ✓ | `{issue, agent?, prompt?}` — delegate an issue to an agent: creates a `pending` session, re-points the issue's delegate seat, optionally records the brief as the first `prompt` activity → `{session, activity}` |
+| `GET /v1/agent-sessions/:ref` | ✓ | `{session, issue, activities}` — the live activity timeline |
+| `POST /v1/agent-sessions/:ref/activities` | ✓ | `{type, body}` — append to the timeline; the session state moves with the type (see below) → `{activity, session}` |
 | `GET /v1/teams` · `POST /v1/teams {key, name}` | ✓ | team create seeds the 7 default workflow states |
 | `GET /v1/projects` · `POST /v1/projects {name, description?, targetDate?}` | ✓ | projects |
 | `GET /v1/webhooks` · `POST /v1/webhooks {url, secret, resourceTypes[]}` · `DELETE /v1/webhooks/:id` | ✓ | webhook registrations — `webhook` entities in the log; secrets are never returned |
+| `ALL /mcp` | ✓ | the `linear-server`-compatible MCP surface over streamable HTTP — same tools as the stdio [`@kanon/mcp`](../mcp/README.md), same 404-shaped auth. One deployment serves REST + SSE + MCP. |
 
 Notes:
 
@@ -95,6 +103,30 @@ Notes:
 - **Durability before response**: a `2xx` write response means the events are
   in the log (appendFileSync) and committed; push is best-effort per
   `KANON_GIT_REMOTE_SYNC` and failures are logged, never returned as errors.
+
+### Agent sessions — derived state (the delegation platform)
+
+An `agent_session` binds an agent actor to an issue; `agent_activity` events
+are the live timeline. **Session state is derived** — it moves only via
+activity appends (and the stale janitor), never set directly, so the activity
+log IS the source of truth for where a delegation stands:
+
+```
+pending ──prompt(brief)──► pending          (delegated, not yet picked up)
+   │
+   └─thought/action──► active ──elicitation──► awaitingInput
+                          ▲                          │
+                          └────────prompt(answer)────┘
+        active ──response──► complete
+        (any) ──error──► error
+        live & idle past KANON_SESSION_STALE_MS ──► stale   (janitor)
+```
+
+`prompt` is the inbound direction (delegator → agent: the brief, or an
+elicitation answer, or a follow-up that reopens a `complete`/`stale`/`error`
+session). The server that owns the clone is the ONE janitor — per-agent stdio
+MCPs deliberately don't run it, so concurrent processes never race to stale
+the same session.
 
 ## Webhooks
 

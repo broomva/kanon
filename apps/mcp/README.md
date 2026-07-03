@@ -43,40 +43,55 @@ REST or the CLI.
 default `0` (a local agent on a local clone). Reads hit the disposable SQLite
 projection; writes append + commit exactly like the CLI.
 
-## Tools (Phase 1 — M3 BRO-1649)
+## Tools
 
-Input schemas are ported **verbatim** from the live `linear-server` MCP
-(`src/linear-schemas.ts` is the parity oracle; `parity.test.ts` asserts the
-advertised `tools/list` equals it).
+The **Linear parity set** — input schemas ported **verbatim** from the live
+`linear-server` MCP (`src/linear-schemas.ts` is the parity oracle;
+`parity.test.ts` asserts the advertised Linear tools equal it):
 
 | Tool | Maps to | Notes |
 |---|---|---|
-| `list_issues` | `service.issues` | `assignee: "me"` → the configured actor |
+| `list_issues` | `service.issues` | `assignee: "me"` → the configured actor; `"null"` → unassigned |
 | `get_issue` | `service.issueDetail` | issue + state + comments + relations |
-| `save_issue` | `createIssue` / `updateIssue` + `relate` | create/update; `blocks`/`blockedBy`/`relatedTo` applied (append-only) |
+| `save_issue` | `createIssue` / `updateIssue` + `relate` / `unrelate` | create/update; `blocks`/`blockedBy`/`relatedTo` add edges, `removeBlocks`/`removeBlockedBy`/`removeRelatedTo` tombstone them; `assignee`/`delegate`/`project`/`milestone`/`parentId` are tri-state (**null clears**) |
 | `list_teams` / `get_team` | `listTeams` / `resolveTeams` | |
 | `list_projects` / `get_project` | `listProjects` / `resolveProjects` | |
-| `save_project` | `createProject` | create-only in Phase 1 |
-| `list_comments` / `save_comment` | `listComments` / `comment` | new top-level issue comments |
+| `save_project` | `createProject` / `updateProject` | create when no `id`, update when given one |
+| `list_comments` / `save_comment` | `listComments` / `comment` / `updateComment` | top-level comments, one-level `parentId` replies, and edit-by-`id` |
 | `list_issue_statuses` | `listStates` | team workflow states |
 | `list_issue_labels` | `listLabels` | |
 | `list_users` | `listActors` | |
 | `list_cycles` | `listModelEntities("cycle")` | Kanon doesn't schedule cycles in v1 |
 
+The **Kanon extension set** — the agent-session/activity platform
+(`src/kanon-schemas.ts`; NOT part of the Linear oracle, since Linear's MCP has
+no session tools):
+
+| Tool | Maps to | Notes |
+|---|---|---|
+| `create_agent_session` | `createAgentSession` | delegate an issue to an agent: `pending` session + delegate seat re-pointed + optional first `prompt` activity |
+| `list_agent_sessions` | `agentSessions` | filter by `issue` / `agent` / `state` |
+| `get_agent_session` | `agentSessionDetail` | session + issue + the full activity timeline |
+| `append_agent_activity` | `appendAgentActivity` | append to the timeline; session state moves with the activity type |
+
 Tool errors are returned as MCP `isError` results (message text), never thrown
 as protocol errors, so an agent sees the reason and can recover.
 
-## Not yet (M3 Phase 2)
+### Agent sessions — derived state
 
-Agent-session/activity platform (sessions + activity timeline, delegate-vs-
-assignee, stale-session janitor), streamable-HTTP transport, relation removal
-(`removeBlocks`/`removeBlockedBy`/`removeRelatedTo`), **null-to-remove**
-(unassign / unparent / remove-from-project — `save_issue` rejects an explicit
-`null` with a clear message rather than silently no-op'ing), `save_project`
-update, comment edit/reply, cursor pagination, and remaining Linear tools
-(documents, initiatives, status updates, cycle scheduling). `save_issue` on an
-existing issue DOES move `state`/`priority`/`assignee`/`delegate`/`labels`/
-`project`/`parent`/`milestone` (Phase 1).
+Session state is **derived** — it moves only via activity appends and the
+server-side stale janitor, never set directly:
+`thought`/`action` → `active`, `elicitation` → `awaitingInput`, `prompt` (an
+elicitation answer or follow-up) → `active`, `response` → `complete`,
+`error` → `error`. There is deliberately no "set state" tool. The
+stale-session janitor runs in the rendezvous server (`@kanon/server`), not the
+stdio MCP — see its README. The [`@kanon/server`](../server/README.md) also
+mounts this same tool surface over streamable HTTP at `/mcp`.
+
+## Not yet
+
+Cursor pagination and the remaining Linear tools Kanon doesn't yet model
+(documents, initiatives, status updates, first-class cycle scheduling).
 
 ## Test
 

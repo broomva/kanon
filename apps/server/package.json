@@ -5,9 +5,12 @@
   "license": "MIT",
   "type": "module",
   "dependencies": {
+    "@hono/mcp": "^0.3.0",
     "@kanon/core": "workspace:*",
+    "@kanon/mcp": "workspace:*",
     "@kanon/service": "workspace:*",
     "@kanon/store": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "hono": "^4.6.0"
   },
   "scripts": {

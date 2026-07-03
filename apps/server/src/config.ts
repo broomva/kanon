@@ -17,6 +17,11 @@
  *                          remote-less clone (tests, air-gapped).
  *   KANON_SYNC_INTERVAL    seconds between pull --rebase cycles (default 30).
  *   KANON_WEBHOOK_INTERVAL_MS  webhook delivery-loop tick (default 500).
+ *   KANON_SESSION_STALE_MS agent sessions still pending/active/awaitingInput
+ *                          with no movement for this long are marked `stale`
+ *                          by the janitor (default 1800000 = 30 min; 0
+ *                          disables the janitor).
+ *   KANON_SESSION_JANITOR_INTERVAL_MS  janitor tick (default 60000).
  *   PORT                   listen port (default 3000; 0 = ephemeral).
  */
 
@@ -43,6 +48,9 @@ export interface ServerConfig {
   gitRemoteSync: boolean;
   syncIntervalMs: number;
   webhookIntervalMs: number;
+  /** Inactivity threshold before the janitor stales a live session; 0 = off. */
+  sessionStaleMs: number;
+  sessionJanitorIntervalMs: number;
   port: number;
 }
 
@@ -122,6 +130,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     gitRemoteSync: (env.KANON_GIT_REMOTE_SYNC ?? "1") !== "0",
     syncIntervalMs: intEnv(env, "KANON_SYNC_INTERVAL", 30, 1) * 1000,
     webhookIntervalMs: intEnv(env, "KANON_WEBHOOK_INTERVAL_MS", 500, 10),
+    sessionStaleMs: intEnv(env, "KANON_SESSION_STALE_MS", 1_800_000, 0),
+    sessionJanitorIntervalMs: intEnv(env, "KANON_SESSION_JANITOR_INTERVAL_MS", 60_000, 10),
     port: intEnv(env, "PORT", 3000, 0),
   };
 }

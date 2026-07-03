@@ -24,8 +24,9 @@ import { loadConfig } from "./config";
 import { createKanonMcpServer } from "./server";
 
 export { ConfigError, loadConfig, type McpConfig, resolveActor } from "./config";
+export { KANON_TOOL_SCHEMAS } from "./kanon-schemas";
 export { LINEAR_TOOL_SCHEMAS } from "./linear-schemas";
-export { createKanonMcpServer, SERVER_NAME, SERVER_VERSION } from "./server";
+export { ALL_TOOL_SCHEMAS, createKanonMcpServer, SERVER_NAME, SERVER_VERSION } from "./server";
 export { TOOL_HANDLERS } from "./tools";
 
 export async function main(): Promise<void> {

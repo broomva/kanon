@@ -48,6 +48,65 @@ export const MODELS = [
 ] as const;
 export type Model = (typeof MODELS)[number];
 
+/**
+ * Agent-session lifecycle (Linear-parity vocabulary). State is DERIVED —
+ * it moves only via activity appends and the stale janitor, never set
+ * directly: pending → active → error/awaitingInput → complete → stale.
+ */
+export const AGENT_SESSION_STATES = [
+  "pending",
+  "active",
+  "error",
+  "awaitingInput",
+  "complete",
+  "stale",
+] as const;
+export type AgentSessionState = (typeof AGENT_SESSION_STATES)[number];
+
+/**
+ * Agent-activity stream vocabulary (Linear-parity). `prompt` is the inbound
+ * direction (user/delegator → agent: the delegation brief or an elicitation
+ * answer); the rest are the agent's outbound turn.
+ */
+export const AGENT_ACTIVITY_TYPES = [
+  "prompt",
+  "thought",
+  "action",
+  "elicitation",
+  "response",
+  "error",
+] as const;
+export type AgentActivityType = (typeof AGENT_ACTIVITY_TYPES)[number];
+
+/**
+ * The total session-state transition function: `state(after append)` given
+ * the current state and the appended activity type. Total on purpose — the
+ * log is distributed and append-only, so guards would fight replicas; LWW
+ * converges whatever the interleaving.
+ */
+export function nextSessionState(
+  current: AgentSessionState,
+  activity: AgentActivityType,
+): AgentSessionState {
+  switch (activity) {
+    case "prompt":
+      // A prompt on a pending session is the delegation brief — the session
+      // stays pending until the agent's first activity picks it up. On any
+      // other state it (re)activates: answering an elicitation, reopening a
+      // complete/stale/errored session with a follow-up.
+      return current === "pending" ? "pending" : "active";
+    case "thought":
+    case "action":
+      return "active";
+    case "elicitation":
+      return "awaitingInput";
+    case "response":
+      return "complete";
+    case "error":
+      return "error";
+  }
+}
+
 export interface EventActor {
   type: ActorType;
   id: string;

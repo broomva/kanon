@@ -31,6 +31,8 @@ export interface BootOptions {
   workspace?: string;
   apiKeys?: string;
   webhookIntervalMs?: string;
+  sessionStaleMs?: string;
+  sessionJanitorIntervalMs?: string;
 }
 
 export interface TestServer {
@@ -54,6 +56,9 @@ export function boot(options: BootOptions = {}): TestServer {
     KANON_API_KEYS: options.apiKeys ?? DEFAULT_KEYS,
     KANON_GIT_REMOTE_SYNC: "0",
     KANON_WEBHOOK_INTERVAL_MS: options.webhookIntervalMs ?? "25",
+    // Janitor off by default in tests — enable per-test via options.
+    KANON_SESSION_STALE_MS: options.sessionStaleMs ?? "0",
+    KANON_SESSION_JANITOR_INTERVAL_MS: options.sessionJanitorIntervalMs ?? "60000",
     PORT: "0",
   });
   const server = startServer(config);
