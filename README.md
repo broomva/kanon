@@ -50,8 +50,8 @@ segments + snapshots from day one, disposable caches, and a first-class rendezvo
 |---|---|---|
 | M0 | Scaffold, event schema v1, `kanon init` / `kanon validate` | done |
 | M1 | Core merge/replay + SQLite projection + CLI lifecycle + Linear import | done |
-| M2 | Rendezvous server: REST v1, ID allocation, webhooks, event feed | **here** |
-| M3 | MCP parity + agent sessions/delegation | planned |
+| M2 | Rendezvous server: REST v1, ID allocation, webhooks, event feed | done |
+| M3 | MCP parity (`linear-server` drop-in) + agent sessions/delegation | **here** (Phase 1: tool parity over stdio; Phase 2: agent sessions) |
 | M4 | Web UI (list/board/detail/cmd-K, SSE) | planned |
 | M5 | Initiatives/status updates/documents + migration tooling | planned |
 

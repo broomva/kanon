@@ -1,0 +1,136 @@
+{
+  "_comment": "PARITY ORACLE — the wire CONTRACT (arg names + types + enums + required) of each linear-server tool, captured from the live linear-server MCP on 2026-07-02. This is the external truth `parity.test.ts` checks `linear-schemas.ts` against: an edit to the served schemas that drifts from Linear's arg contract fails the gate. Descriptions/defaults are intentionally excluded — they are agent-facing prose, not the wire contract (they don't change whether a Linear-shaped call deserializes in Kanon). Regenerate from the live linear-server tool definitions when Linear's schemas change.",
+  "tools": {
+    "list_issues": {
+      "required": [],
+      "props": {
+        "assignee": {},
+        "createdAt": { "type": "string" },
+        "cursor": { "type": "string" },
+        "cycle": { "type": "string" },
+        "delegate": { "type": "string" },
+        "includeArchived": { "type": "boolean" },
+        "label": { "type": "string" },
+        "limit": { "type": "number" },
+        "orderBy": { "type": "string", "enum": ["createdAt", "updatedAt"] },
+        "parentId": { "type": "string" },
+        "priority": { "type": "number" },
+        "project": { "type": "string" },
+        "query": { "type": "string" },
+        "state": { "type": "string" },
+        "team": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "get_issue": {
+      "required": ["id"],
+      "props": { "id": { "type": "string" }, "includeRelations": { "type": "boolean" } }
+    },
+    "save_issue": {
+      "required": [],
+      "props": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "team": { "type": "string" },
+        "description": { "type": "string" },
+        "assignee": {},
+        "delegate": {},
+        "state": { "type": "string" },
+        "priority": { "type": "number" },
+        "estimate": {},
+        "labels": { "type": "array" },
+        "project": {},
+        "milestone": { "type": "string" },
+        "parentId": {},
+        "blocks": { "type": "array" },
+        "blockedBy": { "type": "array" },
+        "relatedTo": { "type": "array" },
+        "removeBlocks": { "type": "array" },
+        "removeBlockedBy": { "type": "array" },
+        "removeRelatedTo": { "type": "array" },
+        "dueDate": { "type": "string" }
+      }
+    },
+    "list_teams": {
+      "required": [],
+      "props": {
+        "cursor": { "type": "string" },
+        "includeArchived": { "type": "boolean" },
+        "limit": { "type": "number" },
+        "orderBy": { "type": "string", "enum": ["createdAt", "updatedAt"] },
+        "query": { "type": "string" }
+      }
+    },
+    "get_team": { "required": ["query"], "props": { "query": { "type": "string" } } },
+    "list_projects": {
+      "required": [],
+      "props": {
+        "cursor": { "type": "string" },
+        "includeArchived": { "type": "boolean" },
+        "limit": { "type": "number" },
+        "orderBy": { "type": "string", "enum": ["createdAt", "updatedAt"] },
+        "query": { "type": "string" },
+        "team": { "type": "string" }
+      }
+    },
+    "get_project": { "required": ["query"], "props": { "query": { "type": "string" } } },
+    "save_project": {
+      "required": [],
+      "props": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "summary": { "type": "string" },
+        "state": { "type": "string" },
+        "targetDate": { "type": "string" },
+        "startDate": { "type": "string" }
+      }
+    },
+    "list_comments": {
+      "required": [],
+      "props": {
+        "issueId": { "type": "string" },
+        "cursor": { "type": "string" },
+        "limit": { "type": "number" },
+        "orderBy": { "type": "string", "enum": ["createdAt", "updatedAt"] }
+      }
+    },
+    "save_comment": {
+      "required": ["body"],
+      "props": {
+        "body": { "type": "string" },
+        "issueId": { "type": "string" },
+        "id": { "type": "string" },
+        "parentId": { "type": "string" }
+      }
+    },
+    "list_issue_statuses": { "required": ["team"], "props": { "team": { "type": "string" } } },
+    "list_issue_labels": {
+      "required": [],
+      "props": {
+        "cursor": { "type": "string" },
+        "limit": { "type": "number" },
+        "name": { "type": "string" },
+        "orderBy": { "type": "string", "enum": ["createdAt", "updatedAt"] },
+        "team": { "type": "string" }
+      }
+    },
+    "list_users": {
+      "required": [],
+      "props": {
+        "cursor": { "type": "string" },
+        "limit": { "type": "number" },
+        "orderBy": { "type": "string", "enum": ["createdAt", "updatedAt"] },
+        "query": { "type": "string" },
+        "team": { "type": "string" }
+      }
+    },
+    "list_cycles": {
+      "required": ["teamId"],
+      "props": {
+        "teamId": { "type": "string" },
+        "type": { "type": "string", "enum": ["current", "previous", "next"] }
+      }
+    }
+  }
+}

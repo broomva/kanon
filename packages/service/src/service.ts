@@ -867,6 +867,26 @@ export class KanonService {
     const delegateRef = optionalString(body, "delegate");
     const delegateId =
       delegateRef === undefined ? undefined : this.actorRefEntity(delegateRef, "delegate", mints);
+    const projectRef = optionalString(body, "project");
+    const projectId = projectRef === undefined ? undefined : this.requireProjectRef(projectRef).id;
+    const parentRef = optionalString(body, "parent");
+    const parentId = parentRef === undefined ? undefined : this.requireIssueRef(parentRef, 400).id;
+    const milestoneRef = optionalString(body, "milestone");
+    let milestoneId: string | undefined;
+    if (milestoneRef !== undefined) {
+      const matches = resolveMilestones(this.db, milestoneRef, projectId);
+      const first = matches[0];
+      if (matches.length === 1 && first !== undefined) {
+        milestoneId = first.id;
+      } else if (matches.length === 0) {
+        throw new ServiceError(400, `no milestone matching "${milestoneRef}"`);
+      } else {
+        throw new ServiceError(
+          400,
+          `ambiguous milestone "${milestoneRef}" — candidates: ${describeCandidates(matches)}`,
+        );
+      }
+    }
 
     let labelIds: string[] | undefined;
     const replaceLabels = optionalStringArray(body, "labels");
@@ -905,6 +925,9 @@ export class KanonService {
       estimate: optionalNumber(body, "estimate"),
       assigneeId,
       delegateId,
+      projectId,
+      parentId,
+      milestoneId,
       labelIds,
     });
     if (Object.keys(data).length === 0) {

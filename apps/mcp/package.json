@@ -1,14 +1,17 @@
 {
-  "name": "@kanon/server",
+  "name": "@kanon/mcp",
   "version": "0.1.0",
-  "description": "Kanon rendezvous server — REST v1, event feed, SSE, webhooks, ID allocation over the git-carried event log",
+  "description": "Kanon MCP server — a drop-in linear-server-compatible MCP surface over the Kanon event log (register as `linear-server`)",
   "license": "MIT",
   "type": "module",
+  "bin": {
+    "kanon-mcp": "./src/index.ts"
+  },
   "dependencies": {
     "@kanon/core": "workspace:*",
     "@kanon/service": "workspace:*",
     "@kanon/store": "workspace:*",
-    "hono": "^4.6.0"
+    "@modelcontextprotocol/sdk": "^1.0.0"
   },
   "scripts": {
     "start": "bun src/index.ts",
