@@ -28,6 +28,13 @@ describe("isPrivateWebhookHost", () => {
     expect(isPrivateWebhookHost("::ffff:169.254.169.254")).toBe(true); // mapped metadata
   });
 
+  test("strips a fully-qualified trailing dot before the name/IP check", () => {
+    expect(isPrivateWebhookHost("localhost.")).toBe(true);
+    expect(isPrivateWebhookHost("db.localhost.")).toBe(true);
+    expect(isPrivateWebhookHost("127.0.0.1.")).toBe(true);
+    expect(isPrivateWebhookHost("example.com.")).toBe(false);
+  });
+
   test("allows public literals + DNS names", () => {
     for (const host of [
       "8.8.8.8",

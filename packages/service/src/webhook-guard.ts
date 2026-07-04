@@ -36,8 +36,11 @@ const MAPPED_V4 = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i;
  * false — they cannot be classified without resolving.
  */
 export function isPrivateWebhookHost(hostname: string): boolean {
-  // URL hosts keep IPv6 in brackets; drop them and any zone id.
-  const host = (hostname.replace(/^\[|\]$/g, "").split("%")[0] ?? "").toLowerCase();
+  // Drop IPv6 brackets + zone id, lowercase, and strip a fully-qualified
+  // trailing dot ("localhost." resolves to localhost just like "localhost").
+  const host = (hostname.replace(/^\[|\]$/g, "").split("%")[0] ?? "")
+    .toLowerCase()
+    .replace(/\.$/, "");
   if (host.length === 0) return true;
   if (host === "localhost" || host.endsWith(".localhost")) return true;
 
