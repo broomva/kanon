@@ -87,9 +87,14 @@ export function KanonApp() {
     },
   });
 
-  // -- theme ------------------------------------------------------------------
+  // -- theme (persisted; read in an effect so SSR stays "light" — no mismatch) -
+  useEffect(() => {
+    const saved = localStorage.getItem("kanon-theme");
+    if (saved === "dark" || saved === "light") setTheme(saved);
+  }, []);
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("kanon-theme", theme);
   }, [theme]);
 
   // -- ⌘K --------------------------------------------------------------------
@@ -181,32 +186,36 @@ export function KanonApp() {
           onToggleTheme={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
         />
 
-        <div className="k-chips">
-          <button
-            type="button"
-            className={`k-chip${!filters.bucket ? " is-active" : ""}`}
-            onClick={() => setFilters((f) => ({ ...f, bucket: undefined }))}
-          >
-            All
-            <span className="k-chip-count">{issues.length}</span>
-          </button>
-          {BUCKETS.map((bucket) => (
+        {/* Bucket chips filter the list; the board already IS the bucket view
+            (columns), so it always renders every column regardless of the chip. */}
+        {view === "list" ? (
+          <div className="k-chips">
             <button
-              key={bucket.id}
               type="button"
-              className={`k-chip${filters.bucket === bucket.id ? " is-active" : ""}`}
-              onClick={() =>
-                setFilters((f) => ({
-                  ...f,
-                  bucket: f.bucket === bucket.id ? undefined : bucket.id,
-                }))
-              }
+              className={`k-chip${!filters.bucket ? " is-active" : ""}`}
+              onClick={() => setFilters((f) => ({ ...f, bucket: undefined }))}
             >
-              {bucket.label}
-              <span className="k-chip-count">{bucketCounts.get(bucket.id) ?? 0}</span>
+              All
+              <span className="k-chip-count">{issues.length}</span>
             </button>
-          ))}
-        </div>
+            {BUCKETS.map((bucket) => (
+              <button
+                key={bucket.id}
+                type="button"
+                className={`k-chip${filters.bucket === bucket.id ? " is-active" : ""}`}
+                onClick={() =>
+                  setFilters((f) => ({
+                    ...f,
+                    bucket: f.bucket === bucket.id ? undefined : bucket.id,
+                  }))
+                }
+              >
+                {bucket.label}
+                <span className="k-chip-count">{bucketCounts.get(bucket.id) ?? 0}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
 
         <div className="k-plane">
           {loadError ? (
@@ -221,7 +230,7 @@ export function KanonApp() {
             </div>
           ) : view === "board" ? (
             <Board
-              issues={visibleIssues}
+              issues={issues}
               cat={catalog}
               liveIssueIds={liveIssueIds}
               selectedRef={selectedRef}

@@ -62,11 +62,3 @@ export const EMPTY_CATALOG: Catalog = {
   actors: [],
   milestones: [],
 };
-
-export function projectName(project: ProjectRecord | undefined): string {
-  return project?.name ?? "";
-}
-
-export function labelName(label: LabelRecord | undefined): string {
-  return label?.name ?? "";
-}
