@@ -216,6 +216,8 @@ describe("kanon MCP server", () => {
     });
     expect(updated.isError).toBeFalsy();
     expect(text(updated)).toContain("atRisk");
+    // Health-only update is field-level LWW — the untouched body must survive.
+    expect(text(updated)).toContain("shipping M5b");
 
     // filtered by a project with no updates → empty
     const bump = await call(client, "get_status_updates", { type: "project", project: "Nope" });
