@@ -254,7 +254,11 @@ export function sync(argv: string[]): void {
     // were renumbered, or they misfire silently on the stale identifier.
     ctx.projection.refresh(); // see the just-pulled events
     const repair = runDoctorRepair(ctx);
-    if (repair.duplicates.length === 0 && repair.watermarks.length === 0) {
+    const wroteRepairs =
+      repair.duplicates.length > 0 ||
+      repair.watermarks.length > 0 ||
+      repair.relationDuplicates.length > 0;
+    if (repair.ok) {
       report({ step: "doctor", status: "skipped", detail: "no repairs" });
     } else {
       const parts: string[] = [];
@@ -272,11 +276,22 @@ export function sync(argv: string[]): void {
             .join(", ")}`,
         );
       }
+      if (repair.relationDuplicates.length > 0) {
+        parts.push(`deduped ${repair.relationDuplicates.length} duplicate edge(s)`);
+      }
+      // Cycles are flagged, never auto-repaired — surface them loudly.
+      if (repair.cycles.length > 0) {
+        parts.push(
+          `blocking cycle(s) — resolve manually: ${repair.cycles
+            .map((cycle) => cycle.issues.join("→"))
+            .join(" | ")}`,
+        );
+      }
       report({ step: "doctor", status: "ok", detail: parts.join("; ") });
-      // Doctor wrote repair events (reassignments + watermark) to the log.
-      // Commit them so THIS sync replicates them — no second `kanon sync`
-      // needed just to push the repair.
-      if (!addAndCommit()) {
+      // Doctor wrote repair events (reassignments + watermark + edge dedup) to
+      // the log. Commit them so THIS sync replicates them — no second
+      // `kanon sync` needed just to push the repair. (Cycles write nothing.)
+      if (wroteRepairs && !addAndCommit()) {
         finish(false);
         return;
       }

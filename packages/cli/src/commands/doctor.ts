@@ -11,14 +11,17 @@
  *    raised to the max — identifiers must never be re-minted.
  */
 
+import { canonicalRelationKey } from "@kanon/store";
 import { resolveActor } from "../actor";
 import { flagBool, parseFlags } from "../args";
 import {
   allocateAndAppend,
+  type EventInput,
   openRepo,
   type RepoContext,
   readMeta,
   withMetaLock,
+  writeEvents,
   writeMeta,
 } from "../context";
 import { emit } from "../output";
@@ -36,10 +39,24 @@ export interface WatermarkFix {
   to: number;
 }
 
+export interface RelationDuplicateFix {
+  canonicalKey: string;
+  keptId: string;
+  tombstonedId: string;
+}
+
+export interface CycleReport {
+  /** Identifiers (or ULIDs) of the issues forming a `blocks` cycle. */
+  issues: string[];
+}
+
 export interface DoctorReport {
   ok: boolean;
   duplicates: DuplicateFix[];
   watermarks: WatermarkFix[];
+  relationDuplicates: RelationDuplicateFix[];
+  /** Blocking cycles — flagged, never auto-repaired (breaking one is a human call). */
+  cycles: CycleReport[];
 }
 
 /**
@@ -54,6 +71,8 @@ export function runDoctorRepair(ctx: RepoContext): DoctorReport {
   const db = ctx.projection.db;
   const duplicates: DuplicateFix[] = [];
   const watermarks: WatermarkFix[] = [];
+  const relationDuplicates: RelationDuplicateFix[] = [];
+  const cycles: CycleReport[] = [];
 
   // -- duplicate identifiers ---------------------------------------------------
   const groups = db
@@ -124,7 +143,131 @@ export function runDoctorRepair(ctx: RepoContext): DoctorReport {
     }
   });
 
-  return { ok: duplicates.length === 0 && watermarks.length === 0, duplicates, watermarks };
+  // -- duplicate relation edges (cross-clone) ----------------------------------
+  // Two clones that `relate` the same edge offline mint two entities with the
+  // same canonical key. Keep the earliest ULID, tombstone the rest, so a single
+  // `unrelate` can't leave a duplicate standing (the "issue stays blocked" bug).
+  const relationRows = db
+    .query<
+      {
+        id: string;
+        rel_type: string | null;
+        issue_id: string | null;
+        related_issue_id: string | null;
+      },
+      []
+    >(
+      "SELECT id, rel_type, issue_id, related_issue_id FROM issue_relations WHERE deleted = 0 ORDER BY id",
+    )
+    .all();
+  const byEdge = new Map<string, string[]>();
+  for (const row of relationRows) {
+    const key = canonicalRelationKey(row.rel_type, row.issue_id, row.related_issue_id);
+    const group = byEdge.get(key);
+    if (group) group.push(row.id);
+    else byEdge.set(key, [row.id]);
+  }
+  const relationTombstones: EventInput[] = [];
+  for (const [canonicalKey, ids] of byEdge) {
+    const [kept, ...extra] = ids;
+    if (kept === undefined || extra.length === 0) continue;
+    for (const id of extra) {
+      relationTombstones.push({ op: "unrelate", model: "issue_relation", modelId: id, data: {} });
+      relationDuplicates.push({ canonicalKey, keptId: kept, tombstonedId: id });
+    }
+  }
+  if (relationTombstones.length > 0) writeEvents(ctx, relationTombstones);
+
+  // -- blocking cycles (flagged, not repaired) ---------------------------------
+  // A blocks B blocks A hides both from `ready` forever. Report each cycle;
+  // breaking it is a human decision, so doctor never auto-tombstones here.
+  for (const cycle of detectBlockingCycles(db)) {
+    cycles.push({ issues: cycle });
+  }
+
+  return {
+    ok:
+      duplicates.length === 0 &&
+      watermarks.length === 0 &&
+      relationDuplicates.length === 0 &&
+      cycles.length === 0,
+    duplicates,
+    watermarks,
+    relationDuplicates,
+    cycles,
+  };
+}
+
+/**
+ * Every distinct `blocks` cycle in the projection, each as a list of issue
+ * identifiers (ULIDs when an issue has no identifier). Standard white/grey/black
+ * DFS; a grey back-edge closes a cycle, canonicalized by its node set so a→b→a
+ * is reported once.
+ */
+function detectBlockingCycles(db: RepoContext["projection"]["db"]): string[][] {
+  const edges = db
+    .query<{ issue_id: string; related_issue_id: string }, []>(
+      "SELECT issue_id, related_issue_id FROM issue_relations " +
+        "WHERE deleted = 0 AND rel_type = 'blocks' AND issue_id IS NOT NULL AND related_issue_id IS NOT NULL",
+    )
+    .all();
+  if (edges.length === 0) return [];
+  const adjacency = new Map<string, string[]>();
+  for (const edge of edges) {
+    const out = adjacency.get(edge.issue_id);
+    if (out) out.push(edge.related_issue_id);
+    else adjacency.set(edge.issue_id, [edge.related_issue_id]);
+  }
+
+  const WHITE = 0;
+  const GREY = 1;
+  const BLACK = 2;
+  const color = new Map<string, number>();
+  const found = new Map<string, string[]>();
+
+  // Iterative DFS (explicit frame stack) so a deep blocks-chain can't overflow
+  // the JS call stack. `path` mirrors the grey ancestors; a grey back-edge to a
+  // node on `path` closes a cycle.
+  for (const root of adjacency.keys()) {
+    if ((color.get(root) ?? WHITE) !== WHITE) continue;
+    const frames: { node: string; next: number }[] = [{ node: root, next: 0 }];
+    const path: string[] = [root];
+    color.set(root, GREY);
+    while (frames.length > 0) {
+      const frame = frames[frames.length - 1];
+      if (frame === undefined) break;
+      const neighbours = adjacency.get(frame.node) ?? [];
+      const child = frame.next < neighbours.length ? neighbours[frame.next] : undefined;
+      if (child !== undefined) {
+        frame.next += 1;
+        const state = color.get(child) ?? WHITE;
+        if (state === GREY) {
+          const start = path.indexOf(child);
+          if (start !== -1) {
+            const cycle = path.slice(start);
+            const canonical = [...cycle].sort().join("|");
+            if (!found.has(canonical)) found.set(canonical, cycle);
+          }
+        } else if (state === WHITE) {
+          color.set(child, GREY);
+          path.push(child);
+          frames.push({ node: child, next: 0 });
+        }
+      } else {
+        color.set(frame.node, BLACK);
+        frames.pop();
+        path.pop();
+      }
+    }
+  }
+
+  const identifierOf = (id: string): string => {
+    const row = db
+      .query<{ identifier: string | null }, [string]>("SELECT identifier FROM issues WHERE id = ?")
+      .get(id);
+    return row?.identifier ?? id;
+  };
+  return [...found.values()].map((cycle) => cycle.map(identifierOf));
 }
 
 export function doctor(argv: string[]): void {
@@ -134,22 +277,38 @@ export function doctor(argv: string[]): void {
     { min: 0, max: 0, usage: "kanon doctor" },
   );
   const ctx = openRepo(flags, resolveActor());
-  const { ok, duplicates, watermarks } = runDoctorRepair(ctx);
-  emit(flagBool(flags, "json"), { ok, duplicates, watermarks }, () => {
-    if (ok) {
-      console.log("ok — no duplicate identifiers, watermarks consistent");
+  const report = runDoctorRepair(ctx);
+  emit(flagBool(flags, "json"), report, () => {
+    if (report.ok) {
+      console.log("ok — no duplicate identifiers, watermarks consistent, edges clean");
       return;
     }
-    for (const fix of duplicates) {
+    for (const fix of report.duplicates) {
       console.log(
         `duplicate ${fix.identifier}: kept ${fix.keptId}, reassigned ${fix.reassignedId} ` +
           `→ ${fix.newIdentifier}`,
       );
     }
-    for (const fix of watermarks) {
+    for (const fix of report.watermarks) {
       console.log(`watermark ${fix.team}: ${fix.from} → ${fix.to}`);
     }
-    console.log("repairs written to the log — run `kanon sync` to replicate them");
+    for (const fix of report.relationDuplicates) {
+      console.log(
+        `duplicate edge ${fix.canonicalKey}: kept ${fix.keptId}, tombstoned ${fix.tombstonedId}`,
+      );
+    }
+    for (const cycle of report.cycles) {
+      console.log(
+        `blocking cycle: ${cycle.issues.join(" → ")} → ${cycle.issues[0]} (break it manually)`,
+      );
+    }
+    if (
+      report.duplicates.length > 0 ||
+      report.watermarks.length > 0 ||
+      report.relationDuplicates.length > 0
+    ) {
+      console.log("repairs written to the log — run `kanon sync` to replicate them");
+    }
   });
   ctx.projection.close();
 }

@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { openProjection, type Projection } from "./projection";
 import {
+  canonicalRelationKey,
+  findAllRelations,
   findRelation,
   getIssue,
   getTeam,
@@ -278,5 +280,85 @@ describe("minimal list/get surfaces", () => {
     expect(
       findRelation(db, "blocks", entityId(E.issueBlockedOpen), entityId(E.issueStore)),
     ).toBeUndefined();
+  });
+});
+
+describe("relation edge dedupe (cross-clone)", () => {
+  test("canonicalRelationKey: blocks is directional, related is symmetric", () => {
+    expect(canonicalRelationKey("blocks", "a", "b")).not.toBe(
+      canonicalRelationKey("blocks", "b", "a"),
+    );
+    expect(canonicalRelationKey("related", "a", "b")).toBe(
+      canonicalRelationKey("related", "b", "a"),
+    );
+  });
+
+  test("listRelations collapses duplicate edges; findAllRelations returns every entity", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "kanon-reldedup-"));
+    try {
+      const a = entityId(1);
+      const b = entityId(2);
+      // Two clones minting the SAME blocks edge offline → two entities, one edge.
+      writeEvents(scratch, [
+        fixtureEvent({
+          seq: 1,
+          op: "relate",
+          model: "issue_relation",
+          entity: 10,
+          ts: "2026-07-01T00:00:00.000Z",
+          data: { type: "blocks", issueId: a, relatedIssueId: b },
+        }),
+        fixtureEvent({
+          seq: 2,
+          op: "relate",
+          model: "issue_relation",
+          entity: 11,
+          ts: "2026-07-01T00:00:01.000Z",
+          data: { type: "blocks", issueId: a, relatedIssueId: b },
+        }),
+      ]);
+      const p = openProjection(scratch, { onWarn: () => {} });
+      p.refresh();
+      expect(listRelations(p.db, a).length).toBe(1); // one logical edge
+      expect(findAllRelations(p.db, "blocks", a, b).length).toBe(2); // both entities
+      // The earliest ULID survives the dedupe.
+      expect(listRelations(p.db, a)[0]?.id).toBe(entityId(10));
+      p.close();
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  test("related is symmetric: the reversed direction is the same edge", () => {
+    const scratch = mkdtempSync(join(tmpdir(), "kanon-relsym-"));
+    try {
+      const a = entityId(1);
+      const b = entityId(2);
+      writeEvents(scratch, [
+        fixtureEvent({
+          seq: 1,
+          op: "relate",
+          model: "issue_relation",
+          entity: 10,
+          ts: "2026-07-01T00:00:00.000Z",
+          data: { type: "related", issueId: a, relatedIssueId: b },
+        }),
+        fixtureEvent({
+          seq: 2,
+          op: "relate",
+          model: "issue_relation",
+          entity: 11,
+          ts: "2026-07-01T00:00:01.000Z",
+          data: { type: "related", issueId: b, relatedIssueId: a }, // reversed
+        }),
+      ]);
+      const p = openProjection(scratch, { onWarn: () => {} });
+      p.refresh();
+      expect(listRelations(p.db, a).length).toBe(1); // deduped across directions
+      expect(findAllRelations(p.db, "related", a, b).length).toBe(2); // both directions
+      p.close();
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
   });
 });

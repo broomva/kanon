@@ -580,3 +580,47 @@ describe("log integrity", () => {
     expect(TEST_ACTOR.id).toBe("carlos@example.com");
   });
 });
+
+describe("labels — team scoping", () => {
+  test("same label name in two teams mints two distinct team-scoped labels", async () => {
+    const { url } = boot();
+    await ok(url, "POST", "/v1/teams", { key: "BRO", name: "Broomva" });
+    await ok(url, "POST", "/v1/teams", { key: "OPS", name: "Platform" });
+
+    await ok(url, "POST", "/v1/issues", { team: "BRO", title: "A", labels: ["infra"] });
+    await ok(url, "POST", "/v1/issues", { team: "OPS", title: "B", labels: ["infra"] });
+
+    const catalog = await ok(url, "GET", "/v1/catalog");
+    const teams = catalog.teams as { id: string; key: string }[];
+    const bro = teams.find((t) => t.key === "BRO");
+    const ops = teams.find((t) => t.key === "OPS");
+    const infra = (catalog.labels as { name: string | null; teamId: string | null }[]).filter(
+      (label) => label.name === "infra",
+    );
+    // Two labels named "infra", one scoped to each team — not silently shared.
+    expect(infra.length).toBe(2);
+    expect(new Set(infra.map((l) => l.teamId))).toEqual(
+      new Set([bro?.id ?? null, ops?.id ?? null]),
+    );
+  });
+
+  test("attaching another team's label by ULID is refused", async () => {
+    const { url } = boot();
+    await ok(url, "POST", "/v1/teams", { key: "BRO", name: "Broomva" });
+    await ok(url, "POST", "/v1/teams", { key: "OPS", name: "Platform" });
+    await ok(url, "POST", "/v1/issues", { team: "BRO", title: "A", labels: ["infra"] });
+
+    const catalog = await ok(url, "GET", "/v1/catalog");
+    const infraId = (catalog.labels as { id: string; name: string | null }[]).find(
+      (label) => label.name === "infra",
+    )?.id as string;
+
+    // BRO's label, referenced by id from an OPS issue → 400 (not in scope).
+    const res = await api(url, "POST", "/v1/issues", {
+      team: "OPS",
+      title: "B",
+      labels: [infraId],
+    });
+    expect(res.status).toBe(400);
+  });
+});

@@ -726,3 +726,72 @@ describe("sync auto-resolves meta.json displayCounters conflicts (BRO-1653)", ()
     expect(status).not.toContain("UU meta.json");
   }, 120_000);
 });
+
+describe("doctor — relation edges", () => {
+  test("flags a blocks cycle (A blocks B blocks A) without repairing it", () => {
+    const repo = tempDir();
+    ok(["init", repo, "--workspace", "acme", "--no-git"]);
+    ok(["team", "create", "--key", "BRO", "--name", "Broomva", "--repo", repo]);
+    ok(["issue", "create", "--team", "BRO", "--title", "A", "--repo", repo]);
+    ok(["issue", "create", "--team", "BRO", "--title", "B", "--repo", repo]);
+    ok(["issue", "relate", "BRO-1", "--blocks", "BRO-2", "--repo", repo]);
+    ok(["issue", "relate", "BRO-2", "--blocks", "BRO-1", "--repo", repo]);
+
+    const report = JSON.parse(ok(["doctor", "--repo", repo, "--json"])) as {
+      ok: boolean;
+      cycles: { issues: string[] }[];
+      relationDuplicates: unknown[];
+    };
+    expect(report.ok).toBe(false);
+    expect(report.cycles.length).toBe(1);
+    expect([...(report.cycles[0]?.issues ?? [])].sort()).toEqual(["BRO-1", "BRO-2"]);
+    // The cycle is flagged, not auto-removed — the edges still exist afterward.
+    expect(report.relationDuplicates.length).toBe(0);
+  });
+});
+
+describe("two-clone relation dedupe", () => {
+  test("same edge minted on two clones: sync doctor dedups it; unrelate clears it", () => {
+    const root = tempDir();
+    const origin = join(root, "origin.git");
+    const cloneA = join(root, "a");
+    const cloneB = join(root, "b");
+    git(root, "init", "--bare", "origin.git");
+
+    git(root, "clone", origin, "a");
+    ok(["init", cloneA, "--workspace", "acme"]);
+    gitIdentity(cloneA);
+    ok(["team", "create", "--key", "BRO", "--name", "Broomva", "--repo", cloneA]);
+    ok(["issue", "create", "--team", "BRO", "--title", "X", "--repo", cloneA]);
+    ok(["issue", "create", "--team", "BRO", "--title", "Y", "--repo", cloneA]);
+    ok(["sync", "--repo", cloneA]);
+
+    git(root, "clone", origin, "b");
+    gitIdentity(cloneB);
+
+    // Offline: BOTH clones relate the SAME edge BRO-1 blocks BRO-2 → two
+    // relation entities (different ULIDs) for one logical edge.
+    ok(["issue", "relate", "BRO-1", "--blocks", "BRO-2", "--repo", cloneA]);
+    ok(["issue", "relate", "BRO-1", "--blocks", "BRO-2", "--repo", cloneB]);
+    ok(["sync", "--repo", cloneA]);
+    // B's sync unions in A's relate → two entities → the in-sync doctor dedups.
+    const bSync = JSON.parse(ok(["sync", "--repo", cloneB, "--json"])) as {
+      steps: { step: string; detail: string }[];
+    };
+    expect(bSync.steps.find((step) => step.step === "doctor")?.detail ?? "").toContain("deduped");
+    ok(["sync", "--repo", cloneA]);
+
+    // BRO-2 is blocked by the open BRO-1 → not ready.
+    const before = JSON.parse(
+      ok(["issue", "ready", "--team", "BRO", "--repo", cloneA, "--json"]),
+    ) as { identifier: string }[];
+    expect(before.map((issue) => issue.identifier)).not.toContain("BRO-2");
+
+    // unrelate tombstones EVERY entity for the edge → BRO-2 unblocked.
+    ok(["issue", "unrelate", "BRO-1", "--blocks", "BRO-2", "--repo", cloneA]);
+    const after = JSON.parse(
+      ok(["issue", "ready", "--team", "BRO", "--repo", cloneA, "--json"]),
+    ) as { identifier: string }[];
+    expect(after.map((issue) => issue.identifier)).toContain("BRO-2");
+  }, 60_000);
+});
