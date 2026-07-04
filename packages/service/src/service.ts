@@ -1080,11 +1080,15 @@ export class KanonService {
         if (t === undefined) throw new ServiceError(404, `no team matching "${ref}"`);
         return { field, id: t.id };
       }
-      default: {
+      case "cycle": {
         const c = resolveCycles(this.db, ref)[0];
         if (c === undefined) throw new ServiceError(404, `no cycle matching "${ref}"`);
         return { field, id: c.id };
       }
+      default:
+        // Exhaustive over DOCUMENT_PARENTS — a new parent kind must add a case,
+        // not silently fall into cycle resolution.
+        throw new ServiceError(500, `unhandled document parent "${kind}"`);
     }
   }
 
