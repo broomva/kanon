@@ -74,6 +74,7 @@ import {
   readDataRepoMeta,
   readyIssues,
   resolveActors,
+  resolveCycles,
   resolveDocuments,
   resolveInitiatives,
   resolveLabels,
@@ -263,6 +264,31 @@ export interface DocumentFilter {
   team?: string | undefined;
   creatorId?: string | undefined;
   query?: string | undefined;
+}
+
+/** Linear's list_cycles `type` — a date-derived window relative to now. */
+const CYCLE_TYPES = ["current", "previous", "next"] as const;
+
+/** Does a cycle fall in the requested window? `all`/unset matches everything. */
+function cycleMatchesType(cycle: BaseRecord, type: string, now: number): boolean {
+  const start = Date.parse(String(cycle.data.startsAt ?? ""));
+  const end = Date.parse(String(cycle.data.endsAt ?? ""));
+  switch (type) {
+    case "current":
+      return Number.isFinite(start) && Number.isFinite(end) && start <= now && now <= end;
+    case "previous":
+      return Number.isFinite(end) && end < now;
+    case "next":
+      return Number.isFinite(start) && start > now;
+    default:
+      return true;
+  }
+}
+
+/** Filters for `listCycles` — team, and a current/previous/next window. */
+export interface CycleFilter {
+  team?: string | undefined;
+  type?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -1054,11 +1080,11 @@ export class KanonService {
         if (t === undefined) throw new ServiceError(404, `no team matching "${ref}"`);
         return { field, id: t.id };
       }
-      default:
-        throw new ServiceError(
-          400,
-          "cycle-parented documents are unsupported until cycles land (M5b-3)",
-        );
+      default: {
+        const c = resolveCycles(this.db, ref)[0];
+        if (c === undefined) throw new ServiceError(404, `no cycle matching "${ref}"`);
+        return { field, id: c.id };
+      }
     }
   }
 
@@ -1118,6 +1144,81 @@ export class KanonService {
       `kanon document update ${String(doc.data.title ?? doc.id)}`,
     );
     return resolveDocuments(this.db, doc.id)[0] ?? null;
+  }
+
+  // -- cycles (team-scoped iteration windows; stored in other_entities) ---------
+
+  /** Filter cycles by team and a date-derived current/previous/next window. */
+  listCycles(filter: CycleFilter = {}): BaseRecord[] {
+    if (filter.type !== undefined && !(CYCLE_TYPES as readonly string[]).includes(filter.type)) {
+      throw new ServiceError(400, `type must be one of ${CYCLE_TYPES.join(" | ")}`);
+    }
+    let all = listModelEntities(this.db, "cycle");
+    if (filter.team !== undefined) {
+      const tid = resolveTeams(this.db, filter.team)[0]?.id;
+      all = tid === undefined ? [] : all.filter((c) => c.data.teamId === tid);
+    }
+    if (filter.type !== undefined) {
+      const now = Date.now();
+      all = all.filter((c) => cycleMatchesType(c, filter.type as string, now));
+    }
+    return all;
+  }
+
+  private requireCycleRef(ref: string): BaseRecord {
+    const first = resolveCycles(this.db, ref)[0];
+    if (first === undefined) throw new ServiceError(404, `no cycle matching "${ref}"`);
+    return first;
+  }
+
+  createCycle(actor: EventActor, raw: unknown): BaseRecord | null {
+    const body = requireBody(raw);
+    const teamRef = requireString(body, "team");
+    const team = resolveTeams(this.db, teamRef)[0];
+    if (team === undefined) throw new ServiceError(404, `no team matching "${teamRef}"`);
+    const cycleId = ulid();
+    this.appendAsActor(
+      actor,
+      [
+        {
+          op: "create",
+          model: "cycle",
+          modelId: cycleId,
+          data: compact({
+            teamId: team.id,
+            name: optionalString(body, "name"),
+            number: optionalInt(body, "number", 0, Number.MAX_SAFE_INTEGER),
+            startsAt: optionalString(body, "startsAt"),
+            endsAt: optionalString(body, "endsAt"),
+            description: optionalString(body, "description"),
+          }),
+        },
+      ],
+      `kanon cycle create ${optionalString(body, "name") ?? cycleId}`,
+    );
+    return resolveCycles(this.db, cycleId)[0] ?? null;
+  }
+
+  /** PATCH-equivalent: name / number / dates / description (team is immutable). */
+  updateCycle(actor: EventActor, ref: string, raw: unknown): BaseRecord | null {
+    const body = requireBody(raw);
+    const cycle = this.requireCycleRef(ref);
+    const data = compact({
+      name: optionalString(body, "name"),
+      number: optionalInt(body, "number", 0, Number.MAX_SAFE_INTEGER),
+      startsAt: stringOrNull(body, "startsAt"),
+      endsAt: stringOrNull(body, "endsAt"),
+      description: optionalString(body, "description"),
+    });
+    if (Object.keys(data).length === 0) {
+      throw new ServiceError(400, "update requires at least one field");
+    }
+    this.appendAsActor(
+      actor,
+      [{ op: "update", model: "cycle", modelId: cycle.id, data }],
+      `kanon cycle update ${String(cycle.data.name ?? cycle.id)}`,
+    );
+    return resolveCycles(this.db, cycle.id)[0] ?? null;
   }
 
   // -- issues -------------------------------------------------------------------

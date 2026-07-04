@@ -103,6 +103,16 @@ export function resolveDocuments(db: Database, ref: string): BaseRecord[] {
   return listModelEntities(db, "document").filter((rec) => rec.id === ref);
 }
 
+/**
+ * Cycles live in `other_entities` (no dedicated table — team-scoped, low volume;
+ * the service filters by team + a date-derived current/previous/next type over
+ * parsed `data`). Resolution is ULID-only — a single record or none.
+ */
+export function resolveCycles(db: Database, ref: string): BaseRecord[] {
+  if (!ULID_PATTERN.test(ref)) return [];
+  return listModelEntities(db, "cycle").filter((rec) => rec.id === ref);
+}
+
 // ---------------------------------------------------------------------------
 // Teams
 // ---------------------------------------------------------------------------

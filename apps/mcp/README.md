@@ -90,8 +90,9 @@ mounts this same tool surface over streamable HTTP at `/mcp`.
 
 ## Not yet
 
-Cursor pagination and the remaining Linear tools Kanon doesn't yet model
-(first-class cycle scheduling).
+Cursor pagination and the remaining Linear concepts Kanon doesn't yet model
+(releases). Cycles are modelled read-only via `list_cycles` plus the Kanon
+extensions `save_cycle` / `get_cycle`.
 
 ## Test
 

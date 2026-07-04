@@ -6,11 +6,11 @@
  * same createEvent → append → commit → refresh → broadcast path the REST
  * server and CLI use. The handler returns markdown; the MCP layer wraps it.
  *
- * Kanon deliberately doesn't model some Linear concepts (releases, first-class
- * cycles); those args are accepted for call-site compatibility and either
- * ignored or answered with an explicit "not in Kanon v1" note rather than a
- * hard failure. Initiatives, status updates, and documents ARE modelled (they
- * live in `other_entities`; see the handlers below).
+ * Kanon deliberately doesn't model a few Linear concepts (releases); those args
+ * are accepted for call-site compatibility and either ignored or answered with
+ * an explicit "not in Kanon v1" note rather than a hard failure. Initiatives,
+ * status updates, documents, and cycles ARE modelled (they live in
+ * `other_entities`; see the handlers below).
  */
 
 import type { EventActor } from "@kanon/core";
@@ -21,8 +21,8 @@ import {
   listActors,
   listComments,
   listLabels,
-  listModelEntities,
   listStates,
+  resolveCycles,
   resolveDocuments,
   resolveInitiatives,
   resolveProjects,
@@ -32,6 +32,8 @@ import {
 import {
   formatAgentSession,
   formatAgentSessionList,
+  formatCycle,
+  formatCycleList,
   formatDocument,
   formatDocumentList,
   formatInitiative,
@@ -442,13 +444,36 @@ export const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
   },
 
   list_cycles(args, ctx) {
-    const teamId = requireStr(args, "teamId");
-    const cycles = listModelEntities(ctx.service.db, "cycle").filter(
-      (cycle) => cycle.data.teamId === teamId,
-    );
-    if (cycles.length === 0)
-      return `_No cycles for team ${teamId}._ (Kanon does not schedule cycles in v1.)`;
-    return `## Cycles (${cycles.length})\n\n${cycles.map((cycle) => `- \`${cycle.id}\``).join("\n")}`;
+    // teamId is resolved as a ref (name or id); `type` is a date-derived window.
+    const cycles = ctx.service.listCycles({
+      team: requireStr(args, "teamId"),
+      type: str(args, "type"),
+    });
+    return formatCycleList(cycles);
+  },
+
+  get_cycle(args, ctx) {
+    const id = requireStr(args, "id");
+    const cycle = resolveCycles(ctx.service.db, id)[0];
+    if (cycle === undefined) throw new ServiceError(404, `no cycle matching "${id}"`);
+    return formatCycle(cycle);
+  },
+
+  save_cycle(args, ctx) {
+    const id = str(args, "id");
+    const fields = clean({
+      name: str(args, "name"),
+      number: typeof args.number === "number" ? args.number : undefined,
+      startsAt: str(args, "startsAt"),
+      endsAt: str(args, "endsAt"),
+      description: str(args, "description"),
+    });
+    const cycle =
+      id === undefined
+        ? ctx.service.createCycle(ctx.actor, { ...fields, team: requireStr(args, "team") })
+        : ctx.service.updateCycle(ctx.actor, id, fields);
+    if (cycle === null) throw new ServiceError(500, "cycle save returned no record");
+    return formatCycle(cycle);
   },
 
   // -- Kanon extensions: agent-session platform (M3 Phase 2) -------------------

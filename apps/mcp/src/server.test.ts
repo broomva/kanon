@@ -275,6 +275,52 @@ describe("kanon MCP server", () => {
     ).toBe(true);
   });
 
+  test("save_cycle create + update; list by team + current/previous window; get; cycle-parented doc", async () => {
+    const { client } = await boot(); // seeds team BRO
+    const day = 86_400_000;
+    const iso = (offsetDays: number) => new Date(Date.now() + offsetDays * day).toISOString();
+
+    // Sprint 1 spans now (current); Sprint 0 already ended (previous).
+    const current = await call(client, "save_cycle", {
+      team: "BRO",
+      name: "Sprint 1",
+      number: 1,
+      startsAt: iso(-2),
+      endsAt: iso(5),
+    });
+    expect(current.isError).toBeFalsy();
+    const id = text(current).match(/\*\*ID\*\*: ([0-9A-HJKMNP-TV-Z]{26})/)?.[1];
+    expect(id).toBeDefined();
+    await call(client, "save_cycle", {
+      team: "BRO",
+      name: "Sprint 0",
+      startsAt: iso(-10),
+      endsAt: iso(-3),
+    });
+
+    expect(text(await call(client, "list_cycles", { teamId: "BRO" }))).toContain("Sprint 1");
+    const cur = text(await call(client, "list_cycles", { teamId: "BRO", type: "current" }));
+    expect(cur).toContain("Sprint 1");
+    expect(cur).not.toContain("Sprint 0");
+    const prev = text(await call(client, "list_cycles", { teamId: "BRO", type: "previous" }));
+    expect(prev).toContain("Sprint 0");
+    expect(prev).not.toContain("Sprint 1");
+
+    expect(text(await call(client, "get_cycle", { id }))).toContain("Sprint 1");
+
+    const updated = await call(client, "save_cycle", { id, name: "Sprint 1 (renamed)" });
+    expect(updated.isError).toBeFalsy();
+    expect(text(updated)).toContain("Sprint 1 (renamed)");
+
+    // a document can now hang off a cycle (the parent rejected before M5b-3)
+    const doc = await call(client, "save_document", { title: "Retro", cycle: id });
+    expect(doc.isError).toBeFalsy();
+    expect(text(doc)).toContain("cycle");
+
+    // create without a team → error
+    expect((await call(client, "save_cycle", { name: "Orphan" })).isError).toBe(true);
+  });
+
   test("unknown issue → isError, not a protocol crash", async () => {
     const { client } = await boot();
     const result = await call(client, "get_issue", { id: "BRO-999" });
