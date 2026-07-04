@@ -726,3 +726,26 @@ describe("sync auto-resolves meta.json displayCounters conflicts (BRO-1653)", ()
     expect(status).not.toContain("UU meta.json");
   }, 120_000);
 });
+
+describe("doctor — relation edges", () => {
+  test("flags a blocks cycle (A blocks B blocks A) without repairing it", () => {
+    const repo = tempDir();
+    ok(["init", repo, "--workspace", "acme", "--no-git"]);
+    ok(["team", "create", "--key", "BRO", "--name", "Broomva", "--repo", repo]);
+    ok(["issue", "create", "--team", "BRO", "--title", "A", "--repo", repo]);
+    ok(["issue", "create", "--team", "BRO", "--title", "B", "--repo", repo]);
+    ok(["issue", "relate", "BRO-1", "--blocks", "BRO-2", "--repo", repo]);
+    ok(["issue", "relate", "BRO-2", "--blocks", "BRO-1", "--repo", repo]);
+
+    const report = JSON.parse(ok(["doctor", "--repo", repo, "--json"])) as {
+      ok: boolean;
+      cycles: { issues: string[] }[];
+      relationDuplicates: unknown[];
+    };
+    expect(report.ok).toBe(false);
+    expect(report.cycles.length).toBe(1);
+    expect([...(report.cycles[0]?.issues ?? [])].sort()).toEqual(["BRO-1", "BRO-2"]);
+    // The cycle is flagged, not auto-removed — the edges still exist afterward.
+    expect(report.relationDuplicates.length).toBe(0);
+  });
+});

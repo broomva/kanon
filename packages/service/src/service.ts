@@ -43,6 +43,7 @@ import {
   appendEvents,
   type CommentRecord,
   DEFAULT_STATES,
+  findAllRelations,
   findRelation,
   getAgentSession,
   getComment,
@@ -592,7 +593,12 @@ export class KanonService {
     mints: EventInput[],
     pending: Map<string, string>,
   ): string {
-    const matches = resolveLabels(this.db, ref);
+    // Only reuse a label that belongs to THIS team (or is global, teamId null).
+    // Otherwise an issue could attach another team's team-scoped label — the
+    // same name in a different team is a distinct label, minted below.
+    const matches = resolveLabels(this.db, ref).filter(
+      (label) => label.teamId === teamId || label.teamId === null,
+    );
     if (matches.length > 1) {
       throw new ServiceError(
         400,
@@ -601,6 +607,12 @@ export class KanonService {
     }
     const existing = matches[0];
     if (existing !== undefined) return existing.id;
+    // A ULID ref named a specific label that isn't in this team's scope (or
+    // doesn't exist) — refuse rather than mint a label literally named after
+    // the id. Name refs fall through to mint a new team-scoped label.
+    if (ULID_PATTERN.test(ref)) {
+      throw new ServiceError(400, `label ${ref} not found in this team`);
+    }
     const key = ref.toLowerCase();
     const pendingId = pending.get(key);
     if (pendingId !== undefined) return pendingId;
@@ -1237,22 +1249,33 @@ export class KanonService {
     relation?: { id: string; type: string; issueId: string; relatedIssueId: string };
   } {
     const issue = this.requireIssueRef(ref, 404);
-    const { spec, existing } = this.relationSpec(issue, raw);
-    if (existing === undefined) {
+    const { spec } = this.relationSpec(issue, raw);
+    // Tombstone EVERY entity for this logical edge, not just the first match:
+    // two clones can have minted duplicate edges offline, and removing one
+    // would leave the issue blocked. findAllRelations folds in the symmetric
+    // direction for `related`.
+    const matches = findAllRelations(this.db, spec.relType, spec.issueId, spec.relatedIssueId);
+    const first = matches[0];
+    if (first === undefined) {
       return { removed: false };
     }
     this.appendAsActor(
       actor,
-      [{ op: "unrelate", model: "issue_relation", modelId: existing.id, data: {} }],
+      matches.map((rel) => ({
+        op: "unrelate" as const,
+        model: "issue_relation" as const,
+        modelId: rel.id,
+        data: {},
+      })),
       `kanon issue unrelate ${issue.identifier ?? issue.id}`,
     );
     return {
       removed: true,
       relation: {
-        id: existing.id,
-        type: existing.relType ?? spec.relType,
-        issueId: existing.issueId ?? spec.issueId,
-        relatedIssueId: existing.relatedIssueId ?? spec.relatedIssueId,
+        id: first.id,
+        type: first.relType ?? spec.relType,
+        issueId: first.issueId ?? spec.issueId,
+        relatedIssueId: first.relatedIssueId ?? spec.relatedIssueId,
       },
     };
   }

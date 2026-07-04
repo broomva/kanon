@@ -463,15 +463,78 @@ function relationRecord(row: RelationRow): RelationRecord {
   };
 }
 
-/** Non-deleted relations touching an issue from EITHER side. */
+/**
+ * The canonical key for a logical edge. `blocks` is directional (A blocks B ≠
+ * B blocks A); `related` is symmetric (either stored direction is the same
+ * edge). Two clones that `relate` the same edge offline mint two entities with
+ * different ULIDs but the SAME canonical key — dedupe collapses them so an
+ * `unrelate` (which tombstones every matching entity) actually clears the edge.
+ */
+export function canonicalRelationKey(
+  relType: string | null,
+  issueId: string | null,
+  relatedIssueId: string | null,
+): string {
+  const a = issueId ?? "";
+  const b = relatedIssueId ?? "";
+  if (relType === "related") {
+    const [lo, hi] = a <= b ? [a, b] : [b, a];
+    return `related|${lo}|${hi}`;
+  }
+  return `${relType ?? ""}|${a}|${b}`;
+}
+
+/**
+ * Non-deleted relations touching an issue from EITHER side, deduped to one row
+ * per logical edge (earliest ULID wins). Cross-clone duplicates stay in the log
+ * — this is a read-side projection concern, not a core-merge change.
+ */
 export function listRelations(db: Database, issueId: string): RelationRecord[] {
-  return db
+  const rows = db
     .query<RelationRow, [string, string]>(
       "SELECT * FROM issue_relations WHERE deleted = 0 AND (issue_id = ? OR related_issue_id = ?) " +
         "ORDER BY id",
     )
     .all(issueId, issueId)
     .map(relationRecord);
+  const seen = new Set<string>();
+  const deduped: RelationRecord[] = [];
+  for (const row of rows) {
+    const key = canonicalRelationKey(row.relType, row.issueId, row.relatedIssueId);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(row);
+  }
+  return deduped;
+}
+
+/**
+ * Every non-deleted relation entity for one logical edge — the exact triple,
+ * plus the reversed direction when `related` (symmetric). `unrelate` tombstones
+ * all of them so a cross-clone duplicate can't leave the edge half-standing.
+ */
+export function findAllRelations(
+  db: Database,
+  relType: string,
+  issueId: string,
+  relatedIssueId: string,
+): RelationRecord[] {
+  const direct = db
+    .query<RelationRow, [string, string, string]>(
+      "SELECT * FROM issue_relations WHERE deleted = 0 AND rel_type = ? AND issue_id = ? " +
+        "AND related_issue_id = ? ORDER BY id",
+    )
+    .all(relType, issueId, relatedIssueId)
+    .map(relationRecord);
+  if (relType !== "related") return direct;
+  const reverse = db
+    .query<RelationRow, [string, string, string]>(
+      "SELECT * FROM issue_relations WHERE deleted = 0 AND rel_type = ? AND issue_id = ? " +
+        "AND related_issue_id = ? ORDER BY id",
+    )
+    .all(relType, relatedIssueId, issueId)
+    .map(relationRecord);
+  return [...direct, ...reverse];
 }
 
 /** The non-deleted relation row exactly matching (rel_type, issue_id, related_issue_id). */
