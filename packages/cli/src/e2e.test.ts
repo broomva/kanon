@@ -505,7 +505,7 @@ describe("display numbering", () => {
 });
 
 describe("two-clone convergence", () => {
-  test("offline divergence + sync (rebase, union merge) + doctor → identical projections", () => {
+  test("offline divergence + sync (rebase, union merge, in-sync doctor) → identical, healed projections", () => {
     const root = tempDir();
     const origin = join(root, "origin.git");
     const cloneA = join(root, "a");
@@ -526,15 +526,20 @@ describe("two-clone convergence", () => {
     expect(ok(["validate", cloneB])).toContain("ok:");
 
     // Offline divergence: both update the SAME field of the SAME issue,
-    // and both allocate the SAME display number for new issues.
+    // and both allocate the SAME display number for new issues (both BRO-2).
     ok(["issue", "update", "BRO-1", "--title", "Title from A", "--repo", cloneA]);
     ok(["issue", "update", "BRO-1", "--title", "Title from B", "--repo", cloneB]);
     ok(["issue", "create", "--team", "BRO", "--title", "From A", "--repo", cloneA]);
     ok(["issue", "create", "--team", "BRO", "--title", "From B", "--repo", cloneB]);
 
-    // Sync dance: A pushes, B rebases (union-merged segments) and pushes,
-    // A pulls B's history.
+    // Sync dance: A pushes, B rebases (union-merged segments) — and B's sync
+    // now runs doctor in-process, healing the duplicate BRO-2 to BRO-3 and
+    // pushing the repair. A then pulls B's history (repair included). No
+    // manual `kanon doctor` step is needed any more: sync self-heals.
     ok(["sync", "--repo", cloneA]);
+    ok(["sync", "--repo", cloneB]);
+    ok(["sync", "--repo", cloneA]);
+    // One more round-trip settles any second-order repair across both clones.
     ok(["sync", "--repo", cloneB]);
     ok(["sync", "--repo", cloneA]);
 
@@ -555,36 +560,169 @@ describe("two-clone convergence", () => {
     expect(titleA).toBe(titleB);
     expect(["Title from A", "Title from B"]).toContain(titleA);
 
-    // Both clones now carry TWO issues numbered 2 — a duplicate identifier.
-    const dupes = JSON.parse(ok(["issue", "list", "--repo", cloneA, "--json"])) as {
-      identifier: string | null;
-    }[];
-    expect(dupes.filter((issue) => issue.identifier === "BRO-2").length).toBe(2);
-
-    // Doctor on A repairs: the LATER-ULID issue gets the next free number.
-    const repair = JSON.parse(ok(["doctor", "--repo", cloneA, "--json"])) as {
-      ok: boolean;
-      duplicates: { identifier: string; newIdentifier: string }[];
-    };
-    expect(repair.ok).toBe(false);
-    expect(repair.duplicates.length).toBe(1);
-    expect(repair.duplicates[0]?.identifier).toBe("BRO-2");
-    expect(repair.duplicates[0]?.newIdentifier).toBe("BRO-3");
-
-    // Replicate the repair; both clones converge again.
-    ok(["sync", "--repo", cloneA]);
-    ok(["sync", "--repo", cloneB]);
-    expect(checksumOf(cloneA)).toBe(checksumOf(cloneB));
-
+    // The duplicate BRO-2 was healed by sync's in-process doctor — no manual
+    // repair. Both clones already carry the deduped, renumbered set.
     for (const clone of [cloneA, cloneB]) {
       const issues = JSON.parse(ok(["issue", "list", "--repo", clone, "--json"])) as {
         identifier: string | null;
       }[];
       const identifiers = issues.map((issue) => issue.identifier).sort();
       expect(identifiers).toEqual(["BRO-1", "BRO-2", "BRO-3"]);
+      // Post-sync doctor is a no-op: sync already repaired everything.
       const health = JSON.parse(ok(["doctor", "--repo", clone, "--json"])) as { ok: boolean };
       expect(health.ok).toBe(true);
       expect(ok(["validate", clone])).toContain("ok:");
     }
+  }, 120_000);
+});
+
+describe("sync auto-resolves meta.json displayCounters conflicts (BRO-1653)", () => {
+  interface SyncStep {
+    step: string;
+    status: string;
+    detail: string;
+  }
+  interface SyncResult {
+    ok: boolean;
+    steps: SyncStep[];
+  }
+  const stepOf = (result: SyncResult, step: string): SyncStep | undefined =>
+    result.steps.find((s) => s.step === step);
+
+  test("divergent offline counts → auto-resolve (max per key) + doctor renumber, no manual intervention", () => {
+    const root = tempDir();
+    const origin = join(root, "origin.git");
+    const cloneA = join(root, "a");
+    const cloneB = join(root, "b");
+    git(root, "init", "--bare", "origin.git");
+
+    // Clone A seeds the workspace + team + one shared issue, pushes.
+    git(root, "clone", origin, "a");
+    ok(["init", cloneA, "--workspace", "acme"]);
+    gitIdentity(cloneA);
+    ok(["team", "create", "--key", "BRO", "--name", "Broomva", "--repo", cloneA]);
+    ok(["issue", "create", "--team", "BRO", "--title", "Shared issue", "--repo", cloneA]);
+    ok(["sync", "--repo", cloneA]);
+
+    // Clone B: full replica via git.
+    git(root, "clone", origin, "b");
+    gitIdentity(cloneB);
+    expect(ok(["validate", cloneB])).toContain("ok:");
+
+    // Offline divergence with DIFFERENT counts: A allocates one new issue
+    // (BRO → 2), B allocates two (BRO → 3). displayCounters now differ
+    // between clones — this is the meta.json conflict BRO-1653 targets.
+    ok(["issue", "create", "--team", "BRO", "--title", "From A", "--repo", cloneA]);
+    ok(["issue", "create", "--team", "BRO", "--title", "From B1", "--repo", cloneB]);
+    ok(["issue", "create", "--team", "BRO", "--title", "From B2", "--repo", cloneB]);
+
+    const metaCount = (dir: string): number =>
+      (
+        JSON.parse(readFileSync(join(dir, "meta.json"), "utf8")) as {
+          displayCounters: Record<string, number>;
+        }
+      ).displayCounters.BRO ?? 0;
+    expect(metaCount(cloneA)).toBe(2);
+    expect(metaCount(cloneB)).toBe(3);
+
+    // A pushes first. B's sync must rebase over A's meta.json and hit the
+    // displayCounters conflict — and resolve it WITHOUT any manual step.
+    ok(["sync", "--repo", cloneA]);
+    const syncB = JSON.parse(ok(["sync", "--repo", cloneB, "--json"])) as SyncResult;
+    expect(syncB.ok).toBe(true);
+
+    // (a) sync succeeded with the auto-resolve pull step + a doctor step.
+    const pullB = stepOf(syncB, "pull");
+    expect(pullB?.status).toBe("ok");
+    expect(pullB?.detail).toContain("auto-resolved meta.json displayCounters");
+    const doctorB = stepOf(syncB, "doctor");
+    expect(doctorB).toBeDefined();
+    // B pulled in A's BRO-2 while holding its own BRO-2 → duplicate; doctor
+    // renumbers the later one and SURFACES the reassignment in sync output.
+    expect(doctorB?.status).toBe("ok");
+    expect(doctorB?.detail).toContain("reassigned");
+    expect(doctorB?.detail).toContain("BRO-2");
+
+    // A pulls B's history (incl. B's repair). Second-order: A now also sees
+    // the duplicate BRO-2, so A's own sync doctor may renumber on A's side —
+    // still no manual intervention.
+    const syncA = JSON.parse(ok(["sync", "--repo", cloneA, "--json"])) as SyncResult;
+    expect(syncA.ok).toBe(true);
+    // Converge: one more round-trip settles any residual repair.
+    ok(["sync", "--repo", cloneB]);
+    ok(["sync", "--repo", cloneA]);
+    ok(["sync", "--repo", cloneB]);
+
+    // (b) final meta.json displayCounters == max of the two diverged sides,
+    // raised by any doctor renumber above it. It must be >= 3 (the higher
+    // pre-merge count) and identical on both clones.
+    const finalA = metaCount(cloneA);
+    const finalB = metaCount(cloneB);
+    expect(finalA).toBe(finalB);
+    expect(finalA).toBeGreaterThanOrEqual(3);
+
+    // (c) both projections converge byte-for-byte.
+    expect(checksumOf(cloneA)).toBe(checksumOf(cloneB));
+
+    // (d) no duplicate identifiers, and each clone is healthy.
+    for (const clone of [cloneA, cloneB]) {
+      const issues = JSON.parse(ok(["issue", "list", "--repo", clone, "--json"])) as {
+        identifier: string | null;
+      }[];
+      const identifiers = issues.map((issue) => issue.identifier);
+      expect(new Set(identifiers).size).toBe(identifiers.length); // all unique
+      const health = JSON.parse(ok(["doctor", "--repo", clone, "--json"])) as { ok: boolean };
+      expect(health.ok).toBe(true);
+      expect(ok(["validate", clone])).toContain("ok:");
+    }
+  }, 120_000);
+
+  test("a genuine non-counter meta.json divergence still falls back to abort + manual hint", () => {
+    const root = tempDir();
+    const origin = join(root, "origin.git");
+    const cloneA = join(root, "a");
+    const cloneB = join(root, "b");
+    git(root, "init", "--bare", "origin.git");
+
+    git(root, "clone", origin, "a");
+    ok(["init", cloneA, "--workspace", "acme"]);
+    gitIdentity(cloneA);
+    ok(["team", "create", "--key", "BRO", "--name", "Broomva", "--repo", cloneA]);
+    ok(["issue", "create", "--team", "BRO", "--title", "Shared", "--repo", cloneA]);
+    ok(["sync", "--repo", cloneA]);
+
+    git(root, "clone", origin, "b");
+    gitIdentity(cloneB);
+
+    // Corrupt the `workspace` field on B's side ONLY (a real conflict, not a
+    // counter race). Both clones commit a meta.json change so the rebase
+    // conflicts on meta.json with differing non-counter fields.
+    ok(["issue", "create", "--team", "BRO", "--title", "From A", "--repo", cloneA]);
+    ok(["sync", "--repo", cloneA]);
+
+    const metaPathB = join(cloneB, "meta.json");
+    const metaB = JSON.parse(readFileSync(metaPathB, "utf8")) as Record<string, unknown>;
+    metaB.workspace = "tampered"; // divergent workspace slug
+    metaB.displayCounters = { BRO: 5 };
+    writeFileSync(metaPathB, `${JSON.stringify(metaB, null, 2)}\n`);
+    git(cloneB, "add", "meta.json");
+    git(cloneB, "commit", "-m", "tamper workspace");
+
+    // B's sync rebases over A and conflicts on meta.json — but the sides
+    // differ on `workspace`, so auto-resolve must REFUSE and fall back to the
+    // safe abort+hint path.
+    const syncB = kanon(["sync", "--repo", cloneB, "--json"]);
+    expect(syncB.code).toBe(1);
+    const result = JSON.parse(syncB.stdout) as SyncResult;
+    expect(result.ok).toBe(false);
+    const pullB = result.steps.find((s) => s.step === "pull");
+    expect(pullB?.status).toBe("failed");
+    expect(pullB?.detail).toContain("rebase aborted");
+    expect(pullB?.detail).toContain("meta.json");
+
+    // Repo left clean (rebase aborted) — no lingering rebase state.
+    expect(() => git(cloneB, "rev-parse", "HEAD")).not.toThrow();
+    const status = git(cloneB, "status", "--porcelain");
+    expect(status).not.toContain("UU meta.json");
   }, 120_000);
 });

@@ -13,29 +13,44 @@
 
 import { resolveActor } from "../actor";
 import { flagBool, parseFlags } from "../args";
-import { allocateAndAppend, openRepo, readMeta, withMetaLock, writeMeta } from "../context";
+import {
+  allocateAndAppend,
+  openRepo,
+  type RepoContext,
+  readMeta,
+  withMetaLock,
+  writeMeta,
+} from "../context";
 import { emit } from "../output";
 
-interface DuplicateFix {
+export interface DuplicateFix {
   identifier: string;
   keptId: string;
   reassignedId: string;
   newIdentifier: string;
 }
 
-interface WatermarkFix {
+export interface WatermarkFix {
   team: string;
   from: number;
   to: number;
 }
 
-export function doctor(argv: string[]): void {
-  const { flags } = parseFlags(
-    argv,
-    { json: "boolean", repo: "value" },
-    { min: 0, max: 0, usage: "kanon doctor" },
-  );
-  const ctx = openRepo(flags, resolveActor());
+export interface DoctorReport {
+  ok: boolean;
+  duplicates: DuplicateFix[];
+  watermarks: WatermarkFix[];
+}
+
+/**
+ * Post-merge repair against an already-open repo context — reused by both the
+ * `kanon doctor` command and `kanon sync` (which surfaces reassignments so
+ * agents caching TEAM-N identifiers across syncs learn they were renumbered).
+ * Writes repairs to the log (they replicate on the next push); mutates the
+ * projection via `allocateAndAppend`'s refresh. Does NOT close the projection —
+ * the caller owns the context lifecycle.
+ */
+export function runDoctorRepair(ctx: RepoContext): DoctorReport {
   const db = ctx.projection.db;
   const duplicates: DuplicateFix[] = [];
   const watermarks: WatermarkFix[] = [];
@@ -109,7 +124,17 @@ export function doctor(argv: string[]): void {
     }
   });
 
-  const ok = duplicates.length === 0 && watermarks.length === 0;
+  return { ok: duplicates.length === 0 && watermarks.length === 0, duplicates, watermarks };
+}
+
+export function doctor(argv: string[]): void {
+  const { flags } = parseFlags(
+    argv,
+    { json: "boolean", repo: "value" },
+    { min: 0, max: 0, usage: "kanon doctor" },
+  );
+  const ctx = openRepo(flags, resolveActor());
+  const { ok, duplicates, watermarks } = runDoctorRepair(ctx);
   emit(flagBool(flags, "json"), { ok, duplicates, watermarks }, () => {
     if (ok) {
       console.log("ok — no duplicate identifiers, watermarks consistent");
