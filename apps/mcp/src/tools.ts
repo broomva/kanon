@@ -6,10 +6,11 @@
  * same createEvent → append → commit → refresh → broadcast path the REST
  * server and CLI use. The handler returns markdown; the MCP layer wraps it.
  *
- * Kanon deliberately doesn't model some Linear concepts (initiatives,
- * releases, first-class cycles); those args are accepted for call-site
- * compatibility and either ignored or answered with an explicit "not in
- * Kanon v1" note rather than a hard failure.
+ * Kanon deliberately doesn't model some Linear concepts (releases, first-class
+ * cycles); those args are accepted for call-site compatibility and either
+ * ignored or answered with an explicit "not in Kanon v1" note rather than a
+ * hard failure. Initiatives ARE modelled (they live in `other_entities`; see
+ * the initiative handlers below).
  */
 
 import type { EventActor } from "@kanon/core";
@@ -22,12 +23,15 @@ import {
   listLabels,
   listModelEntities,
   listStates,
+  resolveInitiatives,
   resolveProjects,
   resolveTeams,
 } from "@kanon/store";
 import {
   formatAgentSession,
   formatAgentSessionList,
+  formatInitiative,
+  formatInitiativeList,
   formatIssueDetail,
   formatIssueList,
   formatLabelList,
@@ -250,6 +254,43 @@ export const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
         : ctx.service.updateProject(ctx.actor, id, clean({ ...fields, name: str(args, "name") }));
     if (project === null) throw new ServiceError(500, "project save returned no record");
     return formatProject(project);
+  },
+
+  list_initiatives(_args, ctx) {
+    return formatInitiativeList(ctx.service.listInitiatives());
+  },
+
+  get_initiative(args, ctx) {
+    const query = requireStr(args, "query");
+    const initiative = resolveInitiatives(ctx.service.db, query)[0];
+    if (initiative === undefined) {
+      throw new ServiceError(404, `no initiative matching "${query}"`);
+    }
+    return formatInitiative(initiative);
+  },
+
+  save_initiative(args, ctx) {
+    const id = str(args, "id");
+    const fields = clean({
+      description: str(args, "description"),
+      summary: str(args, "summary"),
+      status: str(args, "status"),
+      owner: resolveMe(strOrNull(args, "owner"), ctx.actor),
+      targetDate: strOrNull(args, "targetDate"),
+      priority: typeof args.priority === "number" ? args.priority : undefined,
+      color: str(args, "color"),
+      icon: str(args, "icon"),
+    });
+    const initiative =
+      id === undefined
+        ? ctx.service.createInitiative(ctx.actor, { ...fields, name: requireStr(args, "name") })
+        : ctx.service.updateInitiative(
+            ctx.actor,
+            id,
+            clean({ ...fields, name: str(args, "name") }),
+          );
+    if (initiative === null) throw new ServiceError(500, "initiative save returned no record");
+    return formatInitiative(initiative);
   },
 
   list_comments(args, ctx) {

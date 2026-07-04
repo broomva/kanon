@@ -65,6 +65,22 @@ export function listModelEntities(db: Database, model: string): BaseRecord[] {
     .map(baseRecord);
 }
 
+/**
+ * Initiatives live in `other_entities` (no dedicated table in v1 — low volume,
+ * no typed filtering), so resolve them over the parsed `data`: ULID → exact
+ * name (case-insensitive), mirroring `resolveProjects`. Returns ALL matches so
+ * callers can error with candidates on an ambiguous name.
+ */
+export function resolveInitiatives(db: Database, ref: string): BaseRecord[] {
+  const all = listModelEntities(db, "initiative");
+  if (ULID_PATTERN.test(ref)) {
+    const byId = all.filter((rec) => rec.id === ref);
+    if (byId.length > 0) return byId;
+  }
+  const lower = ref.toLowerCase();
+  return all.filter((rec) => String(rec.data.name ?? "").toLowerCase() === lower);
+}
+
 // ---------------------------------------------------------------------------
 // Teams
 // ---------------------------------------------------------------------------

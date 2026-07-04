@@ -10,6 +10,7 @@ import type { Database } from "bun:sqlite";
 import {
   type AgentActivityRecord,
   type AgentSessionRecord,
+  type BaseRecord,
   type CommentRecord,
   getIssue,
   type IssueRecord,
@@ -155,6 +156,27 @@ export function formatProject(project: ProjectRecord): string {
   if (project.targetDate !== null) lines.push(`- **Target date**: ${project.targetDate}`);
   if (project.description !== null && project.description.length > 0) {
     lines.push("", project.description);
+  }
+  return lines.join("\n");
+}
+
+// Initiatives live in other_entities, so their fields ride the `data` overflow.
+export function formatInitiativeList(initiatives: BaseRecord[]): string {
+  if (initiatives.length === 0) return "_No initiatives._";
+  return `## Initiatives (${initiatives.length})\n\n${initiatives
+    .map(
+      (init) =>
+        `- **${String(init.data.name ?? "(unnamed)")}** — ${String(init.data.status ?? "—")} \`${init.id}\``,
+    )
+    .join("\n")}`;
+}
+export function formatInitiative(initiative: BaseRecord): string {
+  const d = initiative.data;
+  const lines = [`# ${String(d.name ?? "(unnamed)")}`, `- **ID**: ${initiative.id}`];
+  if (d.status != null) lines.push(`- **Status**: ${String(d.status)}`);
+  if (d.targetDate != null) lines.push(`- **Target date**: ${String(d.targetDate)}`);
+  if (typeof d.description === "string" && d.description.length > 0) {
+    lines.push("", d.description);
   }
   return lines.join("\n");
 }

@@ -248,6 +248,25 @@ describe("issues", () => {
 // catalog (web-UI bootstrap)
 // ---------------------------------------------------------------------------
 
+describe("initiatives", () => {
+  test("POST creates an initiative; GET lists it (fields ride the data overflow)", async () => {
+    const { url } = boot();
+    const created = await ok(url, "POST", "/v1/initiatives", {
+      name: "Agent OS",
+      description: "umbrella",
+      targetDate: "2027-09-30",
+    });
+    const initiative = created.initiative as { id: string };
+    expect(initiative.id).toHaveLength(26);
+
+    const list = await ok(url, "GET", "/v1/initiatives");
+    const initiatives = list.initiatives as { id: string; data: Record<string, unknown> }[];
+    expect(
+      initiatives.some((i) => i.data.name === "Agent OS" && i.data.targetDate === "2027-09-30"),
+    ).toBe(true);
+  });
+});
+
 describe("catalog", () => {
   test("returns the workspace + resolvable teams/states/projects/labels/actors", async () => {
     const { url } = boot();

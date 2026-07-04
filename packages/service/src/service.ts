@@ -42,6 +42,7 @@ import {
   type AgentSessionRecord,
   allocateDisplayNumber,
   appendEvents,
+  type BaseRecord,
   type CommentRecord,
   DEFAULT_STATES,
   findAllRelations,
@@ -73,6 +74,7 @@ import {
   readDataRepoMeta,
   readyIssues,
   resolveActors,
+  resolveInitiatives,
   resolveLabels,
   resolveMilestones,
   resolveProjects,
@@ -772,6 +774,92 @@ export class KanonService {
       `kanon project update ${project.name ?? project.id}`,
     );
     return resolveProjects(this.db, project.id)[0] ?? null;
+  }
+
+  // -- initiatives (umbrella over projects; stored in other_entities) -----------
+
+  listInitiatives(): BaseRecord[] {
+    return listModelEntities(this.db, "initiative");
+  }
+
+  /** Resolve an initiative ref (ULID or exact name) or throw a typed error. */
+  private requireInitiativeRef(ref: string): BaseRecord {
+    const matches = resolveInitiatives(this.db, ref);
+    if (matches.length > 1) {
+      throw new ServiceError(
+        400,
+        `ambiguous initiative "${ref}" — candidates: ${matches.map((m) => m.id).join(", ")}`,
+      );
+    }
+    const first = matches[0];
+    if (first === undefined) throw new ServiceError(404, `no initiative matching "${ref}"`);
+    return first;
+  }
+
+  createInitiative(actor: EventActor, raw: unknown): BaseRecord | null {
+    const body = requireBody(raw);
+    const name = requireString(body, "name");
+    if (resolveInitiatives(this.db, name).length > 0) {
+      throw new ServiceError(409, `an initiative named "${name}" already exists`);
+    }
+    const initiativeId = ulid();
+    this.appendAsActor(
+      actor,
+      [
+        {
+          op: "create",
+          model: "initiative",
+          modelId: initiativeId,
+          // No dedicated columns — every field rides the data_json overflow.
+          data: compact({
+            name,
+            description: optionalString(body, "description"),
+            targetDate: optionalString(body, "targetDate"),
+            status: optionalString(body, "status"),
+            summary: optionalString(body, "summary"),
+            ownerId: optionalString(body, "owner"),
+            color: optionalString(body, "color"),
+            icon: optionalString(body, "icon"),
+            priority: optionalInt(body, "priority", 0, 4),
+          }),
+        },
+      ],
+      `kanon initiative create ${name}`,
+    );
+    return resolveInitiatives(this.db, initiativeId)[0] ?? null;
+  }
+
+  /** PATCH-equivalent: name (uniqueness enforced), plus overflow fields. */
+  updateInitiative(actor: EventActor, ref: string, raw: unknown): BaseRecord | null {
+    const body = requireBody(raw);
+    const initiative = this.requireInitiativeRef(ref);
+    const name = optionalString(body, "name");
+    if (name !== undefined) {
+      const clash = resolveInitiatives(this.db, name).filter((m) => m.id !== initiative.id);
+      if (clash.length > 0) {
+        throw new ServiceError(409, `an initiative named "${name}" already exists`);
+      }
+    }
+    const data = compact({
+      name,
+      description: optionalString(body, "description"),
+      targetDate: stringOrNull(body, "targetDate"),
+      status: optionalString(body, "status"),
+      summary: optionalString(body, "summary"),
+      ownerId: stringOrNull(body, "owner"),
+      color: optionalString(body, "color"),
+      icon: optionalString(body, "icon"),
+      priority: optionalInt(body, "priority", 0, 4),
+    });
+    if (Object.keys(data).length === 0) {
+      throw new ServiceError(400, "update requires at least one field");
+    }
+    this.appendAsActor(
+      actor,
+      [{ op: "update", model: "initiative", modelId: initiative.id, data }],
+      `kanon initiative update ${String(initiative.data.name ?? initiative.id)}`,
+    );
+    return resolveInitiatives(this.db, initiative.id)[0] ?? null;
   }
 
   // -- issues -------------------------------------------------------------------
