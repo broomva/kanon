@@ -83,6 +83,7 @@ import {
 } from "@kanon/store";
 import { EventBus } from "./bus";
 import { commitLog, isGitRepo, pullRebaseLog, pushLog } from "./git";
+import { isPrivateWebhookHost } from "./webhook-guard";
 
 /** A request-mappable error: the app layer renders `{error}` with `status`. */
 export class ServiceError extends Error {
@@ -122,6 +123,12 @@ export interface WebhookDeliveryTarget extends WebhookRecord {
 export interface ServiceOptions {
   dataDir: string;
   gitRemoteSync: boolean;
+  /**
+   * Allow webhook targets on loopback / link-local / private ranges. Default
+   * false (SSRF guard on). Tests and trusted single-tenant deploys set it via
+   * KANON_WEBHOOK_ALLOW_PRIVATE=1.
+   */
+  allowPrivateWebhooks?: boolean;
   onWarn?: (message: string) => void;
 }
 
@@ -224,6 +231,7 @@ export class KanonService {
   readonly bus: EventBus;
   readonly projection: Projection;
   private readonly gitRemoteSync: boolean;
+  private readonly allowPrivateWebhooks: boolean;
   private readonly warn: (message: string) => void;
   /** The merged canonical stream, ULID-ascending — moved only by reload(). */
   private log: KanonEvent[] = [];
@@ -232,6 +240,7 @@ export class KanonService {
   constructor(options: ServiceOptions) {
     this.dataDir = options.dataDir;
     this.gitRemoteSync = options.gitRemoteSync;
+    this.allowPrivateWebhooks = options.allowPrivateWebhooks ?? false;
     this.warn = options.onWarn ?? ((message) => console.warn(message));
     this.bus = new EventBus(this.warn);
     try {
@@ -1514,6 +1523,13 @@ export class KanonService {
     }
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new ServiceError(400, "url must be http(s)");
+    }
+    if (!this.allowPrivateWebhooks && isPrivateWebhookHost(parsed.hostname)) {
+      throw new ServiceError(
+        400,
+        `url host "${parsed.hostname}" is a loopback/link-local/private address — refused to ` +
+          "prevent SSRF (set KANON_WEBHOOK_ALLOW_PRIVATE=1 to allow internal targets)",
+      );
     }
     const secret = requireString(body, "secret");
     const resourceTypes = optionalStringArray(body, "resourceTypes");

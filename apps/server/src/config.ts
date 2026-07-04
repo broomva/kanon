@@ -46,6 +46,8 @@ export interface ServerConfig {
   /** bearer token → principal. */
   apiKeys: Map<string, ApiKeyPrincipal>;
   gitRemoteSync: boolean;
+  /** Allow webhook targets on private/loopback ranges (SSRF guard off). */
+  allowPrivateWebhooks: boolean;
   syncIntervalMs: number;
   webhookIntervalMs: number;
   /** Inactivity threshold before the janitor stales a live session; 0 = off. */
@@ -128,6 +130,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     dataDir,
     apiKeys: parseApiKeys(rawKeys),
     gitRemoteSync: (env.KANON_GIT_REMOTE_SYNC ?? "1") !== "0",
+    allowPrivateWebhooks: (env.KANON_WEBHOOK_ALLOW_PRIVATE ?? "0") === "1",
     syncIntervalMs: intEnv(env, "KANON_SYNC_INTERVAL", 30, 1) * 1000,
     webhookIntervalMs: intEnv(env, "KANON_WEBHOOK_INTERVAL_MS", 500, 10),
     sessionStaleMs: intEnv(env, "KANON_SESSION_STALE_MS", 1_800_000, 0),

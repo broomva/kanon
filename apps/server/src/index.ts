@@ -32,6 +32,7 @@ export function startServer(config: ServerConfig): RunningServer {
   const service = new KanonService({
     dataDir: config.dataDir,
     gitRemoteSync: config.gitRemoteSync,
+    allowPrivateWebhooks: config.allowPrivateWebhooks,
   });
   const app = createApp(service, config);
 

@@ -33,6 +33,8 @@ export interface BootOptions {
   webhookIntervalMs?: string;
   sessionStaleMs?: string;
   sessionJanitorIntervalMs?: string;
+  /** "1" (default in tests) lets webhook receivers bind localhost. */
+  allowPrivateWebhooks?: string;
 }
 
 export interface TestServer {
@@ -55,6 +57,7 @@ export function boot(options: BootOptions = {}): TestServer {
     KANON_DATA_DIR: dataDir,
     KANON_API_KEYS: options.apiKeys ?? DEFAULT_KEYS,
     KANON_GIT_REMOTE_SYNC: "0",
+    KANON_WEBHOOK_ALLOW_PRIVATE: options.allowPrivateWebhooks ?? "1",
     KANON_WEBHOOK_INTERVAL_MS: options.webhookIntervalMs ?? "25",
     // Janitor off by default in tests — enable per-test via options.
     KANON_SESSION_STALE_MS: options.sessionStaleMs ?? "0",
