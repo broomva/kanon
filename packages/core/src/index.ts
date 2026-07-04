@@ -193,14 +193,17 @@ export function ulid(now: number = Date.now()): string {
  * an `unrelate` on this deterministic id tombstones the pair whether or not a
  * matching `relate` was ever seen, and the projection reads it as removed.
  *
- * The id is 128 bits of FNV-1a (two folds) rendered as 26 Crockford-base32
- * chars, so it is ULID-shaped (`ULID_PATTERN`) and flows through every
- * modelId path unchanged. It is NOT time-ordered — nothing keys ordering on
- * modelId (merge/replay order on the event id, a real ULID); modelId is only
- * an entity key.
+ * The id is 128 bits of FNV-1a (two independent folds) rendered as 26
+ * Crockford-base32 chars, so it is ULID-shaped (`ULID_PATTERN`) and flows
+ * through every modelId path unchanged. It is NOT time-ordered — nothing keys
+ * ordering on modelId (merge/replay order on the event id, a real ULID);
+ * modelId is only an entity key. The pair is JSON-encoded before folding so
+ * the two ids are unambiguously delimited (a bare separator like a space
+ * would collide `("a b","c")` with `("a","b c")`), independent of the ULID
+ * shape of the inputs.
  */
 export function issueLabelId(issueId: string, labelId: string): string {
-  const key = `${issueId} ${labelId}`;
+  const key = JSON.stringify([issueId, labelId]);
   const hi = BigInt(`0x${fnv1a64(key)}`);
   const lo = BigInt(`0x${fnv1a64(`kanon:issue_label:${key}`)}`);
   let n = (hi << 64n) | lo;
