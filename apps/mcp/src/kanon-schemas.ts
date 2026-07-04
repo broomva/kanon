@@ -84,6 +84,36 @@ export const KANON_TOOL_SCHEMAS: Record<string, ToolSchema> = {
       },
     },
   },
+  get_cycle: {
+    description:
+      "Retrieve one cycle by ID (Kanon extension — Linear's MCP has no get_cycle; list_cycles " +
+      "returns a team's cycles, this fetches a single one with its dates + description).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id"],
+      properties: { id: str("Cycle ID (ULID)") },
+    },
+  },
+  save_cycle: {
+    description:
+      "Create or update a cycle (Kanon extension — Linear's MCP exposes cycles read-only via " +
+      "list_cycles). If `id` is provided, updates the existing cycle; otherwise creates a new " +
+      "one. When creating, `team` is required.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        id: str("Cycle ID (ULID). If provided, updates the existing cycle"),
+        team: str("Team name or ID (required when creating)"),
+        name: str("Cycle name"),
+        number: { type: "integer", minimum: 0, description: "Cycle number" },
+        startsAt: str("Start date (ISO format)"),
+        endsAt: str("End date (ISO format)"),
+        description: str("Content as Markdown"),
+      },
+    },
+  },
 };
 
 export type KanonToolName = keyof typeof KANON_TOOL_SCHEMAS;

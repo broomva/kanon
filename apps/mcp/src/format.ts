@@ -230,6 +230,35 @@ export function formatDocument(document: BaseRecord): string {
   return lines.join("\n");
 }
 
+// Cycles also live in other_entities — team/number/dates ride `data`.
+function cycleLabel(d: Record<string, unknown>): string {
+  if (d.name != null) return String(d.name);
+  if (d.number != null) return `Cycle ${String(d.number)}`;
+  return "(unnamed cycle)";
+}
+export function formatCycleList(cycles: BaseRecord[]): string {
+  if (cycles.length === 0) return "_No cycles._";
+  return `## Cycles (${cycles.length})\n\n${cycles
+    .map((c) => {
+      const window =
+        c.data.startsAt != null && c.data.endsAt != null
+          ? ` (${String(c.data.startsAt)} → ${String(c.data.endsAt)})`
+          : "";
+      return `- **${cycleLabel(c.data)}**${window} \`${c.id}\``;
+    })
+    .join("\n")}`;
+}
+export function formatCycle(cycle: BaseRecord): string {
+  const d = cycle.data;
+  const lines = [`# ${cycleLabel(d)}`, `- **ID**: ${cycle.id}`];
+  if (d.teamId != null) lines.push(`- **Team**: ${String(d.teamId)}`);
+  if (d.number != null) lines.push(`- **Number**: ${String(d.number)}`);
+  if (d.startsAt != null) lines.push(`- **Starts**: ${String(d.startsAt)}`);
+  if (d.endsAt != null) lines.push(`- **Ends**: ${String(d.endsAt)}`);
+  if (typeof d.description === "string" && d.description.length > 0) lines.push("", d.description);
+  return lines.join("\n");
+}
+
 export function formatStateList(states: StateRecord[]): string {
   if (states.length === 0) return "_No statuses._";
   return `## Statuses (${states.length})\n\n${states

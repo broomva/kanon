@@ -331,6 +331,33 @@ describe("documents", () => {
   });
 });
 
+describe("cycles", () => {
+  test("POST creates a cycle on a team; GET lists it; team required / resolved", async () => {
+    const { url } = boot();
+    await ok(url, "POST", "/v1/teams", { key: "BRO", name: "Broomva" });
+
+    const created = await ok(url, "POST", "/v1/cycles", {
+      team: "BRO",
+      name: "Sprint 1",
+      number: 1,
+      startsAt: "2026-07-01",
+      endsAt: "2026-07-14",
+    });
+    const cycle = created.cycle as { id: string; data: Record<string, unknown> };
+    expect(cycle.id).toHaveLength(26);
+    expect(cycle.data.name).toBe("Sprint 1");
+    expect(cycle.data.number).toBe(1);
+
+    const list = await ok(url, "GET", "/v1/cycles");
+    const cycles = list.cycles as { data: Record<string, unknown> }[];
+    expect(cycles.some((c) => c.data.name === "Sprint 1")).toBe(true);
+
+    // no team → 400; unknown team → 404
+    expect((await api(url, "POST", "/v1/cycles", { name: "Orphan" })).status).toBe(400);
+    expect((await api(url, "POST", "/v1/cycles", { team: "NOPE", name: "X" })).status).toBe(404);
+  });
+});
+
 describe("catalog", () => {
   test("returns the workspace + resolvable teams/states/projects/labels/actors", async () => {
     const { url } = boot();
