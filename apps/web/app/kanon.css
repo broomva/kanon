@@ -99,6 +99,13 @@ button {
 .k-nav-item:hover {
   background: var(--bv-frost-8);
 }
+.k-nav-item:active {
+  background: var(--bv-frost-12);
+}
+.k-nav-item:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--ring);
+}
 .k-nav-item.is-active {
   background: var(--sidebar-accent);
   color: var(--foreground);
@@ -139,8 +146,18 @@ button {
   font-size: 11px;
   color: var(--muted-foreground);
 }
-.k-sb-spacer {
+/* Teams + projects scroll independently so a large workspace (many teams /
+   projects) never clips against the pinned workspace header and live footer. */
+.k-sb-scroll {
   flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  /* room for the focus ring on the first/last row inside the scrollport */
+  padding: 2px;
+  margin: -2px;
 }
 .k-live {
   display: flex;
@@ -209,14 +226,21 @@ button {
   gap: 6px;
   padding: 5px 11px;
   border: none;
-  border-radius: 7px;
+  border-radius: 6px; /* concentric: seg radius-lg (8px) − 2px padding */
   background: transparent;
   color: var(--muted-foreground);
   font-size: var(--bv-text-sm);
-  transition: all var(--bv-dur-fast) var(--bv-ease-standard);
+  transition:
+    color var(--bv-dur-fast) var(--bv-ease-standard),
+    background var(--bv-dur-fast) var(--bv-ease-standard),
+    box-shadow var(--bv-dur-fast) var(--bv-ease-standard),
+    transform var(--bv-dur-fast) var(--bv-ease-standard);
 }
 .k-seg-btn:hover {
   color: var(--foreground);
+}
+.k-seg-btn:active {
+  transform: scale(0.97);
 }
 .k-seg-btn.is-active {
   background: var(--card);
@@ -274,7 +298,14 @@ button {
   border-radius: var(--bv-radius-full);
   font-size: var(--bv-text-sm);
   font-weight: var(--bv-weight-medium);
-  transition: all var(--bv-dur-fast) var(--bv-ease-standard);
+  transition:
+    background var(--bv-dur-fast) var(--bv-ease-standard),
+    border-color var(--bv-dur-fast) var(--bv-ease-standard),
+    color var(--bv-dur-fast) var(--bv-ease-standard),
+    transform var(--bv-dur-fast) var(--bv-ease-standard);
+}
+.k-btn:active:not(:disabled) {
+  transform: scale(0.97);
 }
 .k-btn--sm {
   height: 30px;
@@ -309,11 +340,17 @@ button {
   border-radius: var(--bv-radius-lg);
   background: transparent;
   color: var(--muted-foreground);
-  transition: all var(--bv-dur-fast) var(--bv-ease-standard);
+  transition:
+    background var(--bv-dur-fast) var(--bv-ease-standard),
+    color var(--bv-dur-fast) var(--bv-ease-standard),
+    transform var(--bv-dur-fast) var(--bv-ease-standard);
 }
 .k-icon-btn:hover {
   background: var(--bv-frost-8);
   color: var(--foreground);
+}
+.k-icon-btn:active {
+  transform: scale(0.94);
 }
 
 /* Chips bar */
@@ -338,11 +375,17 @@ button {
   color: var(--muted-foreground);
   font-size: 13px;
   white-space: nowrap;
-  transition: all var(--bv-dur-fast) var(--bv-ease-standard);
+  transition:
+    background var(--bv-dur-fast) var(--bv-ease-standard),
+    color var(--bv-dur-fast) var(--bv-ease-standard),
+    transform var(--bv-dur-fast) var(--bv-ease-standard);
 }
 .k-chip:hover {
   background: var(--bv-frost-8);
   color: var(--foreground);
+}
+.k-chip:active {
+  transform: scale(0.97);
 }
 .k-chip.is-active {
   background: var(--bv-frost-12);
@@ -372,11 +415,13 @@ button {
 .k-empty-title {
   font-size: var(--bv-text-2xl);
   font-weight: var(--bv-weight-semi);
+  text-wrap: balance;
 }
 .k-empty-sub {
   font-size: var(--bv-text-sm);
   color: var(--muted-foreground);
   max-width: 340px;
+  text-wrap: pretty;
 }
 
 /* Shared dot */
@@ -384,6 +429,50 @@ button {
   display: inline-block;
   border-radius: 99px;
   flex-shrink: 0;
+}
+
+/* ── Skeleton — first-paint shimmer (matte, on the blue axis) ─── */
+.k-skeleton {
+  display: block;
+  border-radius: var(--bv-radius-chip);
+  background: linear-gradient(
+    100deg,
+    var(--bv-frost-4) 30%,
+    var(--bv-frost-12) 50%,
+    var(--bv-frost-4) 70%
+  );
+  background-size: 220% 100%;
+  animation: k-shimmer 1.5s var(--bv-ease-standard) infinite;
+}
+@keyframes k-shimmer {
+  from {
+    background-position: 190% 0;
+  }
+  to {
+    background-position: -30% 0;
+  }
+}
+.k-skel-card {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--bv-radius-xl);
+  background: var(--card);
+  box-shadow: var(--bv-shadow-edge);
+}
+.k-skel-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 16px;
+}
+.k-skel-block {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 0;
 }
 
 /* ── Board ──────────────────────────────────────────────── */
@@ -466,6 +555,23 @@ button {
   border-color: var(--bv-border-25);
   box-shadow: var(--bv-shadow-card-hover);
 }
+/* Press — no scale on cards (brand rule): deepen the edge instead. */
+.k-card:active {
+  border-color: var(--bv-border-25);
+  box-shadow: var(--bv-shadow-card-hover);
+}
+/* Focus ring as an inset shadow so it never clips inside the column's
+   overflow (an outset outline would be cut at the scroll edges). */
+.k-card:focus-visible {
+  outline: none;
+  border-color: var(--ring);
+  box-shadow:
+    inset 0 0 0 1px var(--ring),
+    var(--bv-shadow-card-hover);
+}
+.k-card.is-dragging {
+  opacity: 0.45;
+}
 .k-card-top {
   display: flex;
   align-items: center;
@@ -479,6 +585,7 @@ button {
 .k-card-title {
   font-size: var(--bv-text-sm);
   line-height: 1.35;
+  text-wrap: pretty;
 }
 .k-card-foot {
   display: flex;
@@ -609,8 +716,15 @@ button {
 .k-row:hover {
   background: var(--bv-frost-8);
 }
+.k-row:active {
+  background: var(--bv-frost-12);
+}
 .k-row.is-selected {
   background: var(--bv-frost-12);
+}
+.k-row:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 2px var(--ring);
 }
 .k-row-ref {
   font-size: 12px;
@@ -699,6 +813,7 @@ button {
   font-weight: var(--bv-weight-medium);
   line-height: 1.3;
   margin: 8px 0 0;
+  text-wrap: balance;
 }
 .k-badge {
   display: inline-flex;
@@ -856,6 +971,7 @@ button {
   line-height: 1.6;
   color: var(--bv-gray-700);
   white-space: pre-wrap;
+  text-wrap: pretty;
 }
 .k-muted {
   font-size: 13px;
@@ -969,6 +1085,7 @@ button {
   font-size: 13px;
   color: var(--bv-gray-700);
   line-height: 1.5;
+  text-wrap: pretty;
 }
 
 /* Receipt */
@@ -1014,6 +1131,7 @@ button {
   font-size: var(--bv-text-sm);
   line-height: 1.55;
   white-space: pre-wrap;
+  text-wrap: pretty;
 }
 
 /* Composer (glass) */
@@ -1113,6 +1231,9 @@ button {
 .k-cmd-item.is-active {
   background: var(--bv-frost-12);
 }
+.k-cmd-item:active {
+  background: var(--bv-frost-12);
+}
 .k-cmd-icon {
   display: inline-flex;
   width: 18px;
@@ -1200,4 +1321,21 @@ button {
 .k-dialog-error {
   font-size: 12px;
   color: var(--bv-danger);
+}
+
+/* ── Reduced motion — honour the OS preference ──────────────
+   The Undertow + tidepool dots are already gated in motion.css;
+   this covers the app-surface animations declared here. */
+@media (prefers-reduced-motion: reduce) {
+  .k-cmd,
+  .k-dialog {
+    animation: none;
+  }
+  .k-live-dot--connecting {
+    animation: none;
+  }
+  .k-skeleton {
+    animation: none;
+    background: var(--bv-frost-8);
+  }
 }

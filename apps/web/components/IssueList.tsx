@@ -2,7 +2,7 @@ import type { CatalogIndex } from "../lib/catalog";
 import { relativeTime } from "../lib/format";
 import type { IssueRecord } from "../lib/types";
 import { BUCKETS, type Bucket, bucketOf } from "../lib/work-state";
-import { Avatar, PriorityMark, StateDot } from "./primitives";
+import { Avatar, PriorityMark, StateDot, ToneDot } from "./primitives";
 
 export interface IssueListProps {
   issues: IssueRecord[];
@@ -28,6 +28,7 @@ export function IssueList({ issues, cat, liveIssueIds, selectedRef, onSelect }: 
         return (
           <section key={bucket.id} className="k-list-group">
             <div className="k-list-group-head">
+              <ToneDot tone={bucket.tone} />
               <span className="k-list-group-title">{bucket.label}</span>
               <span className="k-col-count">{list.length}</span>
             </div>

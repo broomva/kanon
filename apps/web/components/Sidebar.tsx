@@ -51,67 +51,67 @@ export function Sidebar({
         </div>
       </div>
 
-      <nav className="k-nav">
-        <button
-          type="button"
-          className={`k-nav-item${!filters.team && !filters.project ? " is-active" : ""}`}
-          onClick={() => onFilter({ ...filters, team: undefined, project: undefined })}
-        >
-          <Inbox size={16} />
-          <span className="k-nav-label">All work</span>
-          <span className="k-nav-count">{totalOpen}</span>
-        </button>
-      </nav>
+      <div className="k-sb-scroll">
+        <nav className="k-nav">
+          <button
+            type="button"
+            className={`k-nav-item${!filters.team && !filters.project ? " is-active" : ""}`}
+            onClick={() => onFilter({ ...filters, team: undefined, project: undefined })}
+          >
+            <Inbox size={16} />
+            <span className="k-nav-label">All work</span>
+            <span className="k-nav-count">{totalOpen}</span>
+          </button>
+        </nav>
 
-      {teams.length > 0 ? (
-        <div className="k-sb-section">
-          <div className="k-sb-section-label">Teams</div>
-          {teams.map((team) => (
-            <button
-              key={team.id}
-              type="button"
-              className={`k-nav-item${filters.team === team.id ? " is-active" : ""}`}
-              onClick={() =>
-                onFilter({
-                  ...filters,
-                  team: filters.team === team.id ? undefined : team.id,
-                  project: undefined,
-                })
-              }
-            >
-              <span className="k-team-key">{team.key}</span>
-              <span className="k-nav-label">{team.name ?? team.key}</span>
-              <span className="k-nav-count">{teamCounts.get(team.id) ?? 0}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
+        {teams.length > 0 ? (
+          <div className="k-sb-section">
+            <div className="k-sb-section-label">Teams</div>
+            {teams.map((team) => (
+              <button
+                key={team.id}
+                type="button"
+                className={`k-nav-item${filters.team === team.id ? " is-active" : ""}`}
+                onClick={() =>
+                  onFilter({
+                    ...filters,
+                    team: filters.team === team.id ? undefined : team.id,
+                    project: undefined,
+                  })
+                }
+              >
+                <span className="k-team-key">{team.key}</span>
+                <span className="k-nav-label">{team.name ?? team.key}</span>
+                <span className="k-nav-count">{teamCounts.get(team.id) ?? 0}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
 
-      {projects.length > 0 ? (
-        <div className="k-sb-section">
-          <div className="k-sb-section-label">Projects</div>
-          {projects.map((project) => (
-            <button
-              key={project.id}
-              type="button"
-              className={`k-nav-item${filters.project === project.id ? " is-active" : ""}`}
-              onClick={() =>
-                onFilter({
-                  ...filters,
-                  project: filters.project === project.id ? undefined : project.id,
-                  team: undefined,
-                })
-              }
-            >
-              <Layers size={15} />
-              <span className="k-nav-label">{project.name ?? "Project"}</span>
-              <span className="k-nav-count">{projectCounts.get(project.id) ?? 0}</span>
-            </button>
-          ))}
-        </div>
-      ) : null}
-
-      <div className="k-sb-spacer" />
+        {projects.length > 0 ? (
+          <div className="k-sb-section">
+            <div className="k-sb-section-label">Projects</div>
+            {projects.map((project) => (
+              <button
+                key={project.id}
+                type="button"
+                className={`k-nav-item${filters.project === project.id ? " is-active" : ""}`}
+                onClick={() =>
+                  onFilter({
+                    ...filters,
+                    project: filters.project === project.id ? undefined : project.id,
+                    team: undefined,
+                  })
+                }
+              >
+                <Layers size={15} />
+                <span className="k-nav-label">{project.name ?? "Project"}</span>
+                <span className="k-nav-count">{projectCounts.get(project.id) ?? 0}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
 
       <div className="k-live" data-status={liveStatus}>
         <span className={`k-live-dot k-live-dot--${liveStatus}`} />
