@@ -40,7 +40,7 @@ export function isPrivateWebhookHost(hostname: string): boolean {
   // trailing dot ("localhost." resolves to localhost just like "localhost").
   const host = (hostname.replace(/^\[|\]$/g, "").split("%")[0] ?? "")
     .toLowerCase()
-    .replace(/\.$/, "");
+    .replace(/\.+$/, "");
   if (host.length === 0) return true;
   if (host === "localhost" || host.endsWith(".localhost")) return true;
 

@@ -30,6 +30,7 @@ describe("isPrivateWebhookHost", () => {
 
   test("strips a fully-qualified trailing dot before the name/IP check", () => {
     expect(isPrivateWebhookHost("localhost.")).toBe(true);
+    expect(isPrivateWebhookHost("localhost..")).toBe(true); // multiple trailing dots
     expect(isPrivateWebhookHost("db.localhost.")).toBe(true);
     expect(isPrivateWebhookHost("127.0.0.1.")).toBe(true);
     expect(isPrivateWebhookHost("example.com.")).toBe(false);
