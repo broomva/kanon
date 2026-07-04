@@ -254,6 +254,12 @@ export function createApp(service: KanonService, config: ServerConfig): Hono<App
     ),
   );
 
+  app.get("/v1/documents", (c) => c.json({ documents: service.listDocuments() }));
+
+  app.post("/v1/documents", async (c) =>
+    c.json({ document: service.createDocument(c.get("actor"), await jsonBody(c.req.raw)) }, 201),
+  );
+
   // -- webhooks -----------------------------------------------------------------
   app.get("/v1/webhooks", (c) => c.json({ webhooks: service.listWebhooks() }));
 

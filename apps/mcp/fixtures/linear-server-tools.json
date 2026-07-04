@@ -155,6 +155,43 @@
         "type": { "type": "string", "enum": ["project", "initiative"] }
       }
     },
+    "list_documents": {
+      "required": [],
+      "props": {
+        "createdAt": { "type": "string" },
+        "creatorId": { "type": "string" },
+        "cursor": { "type": "string" },
+        "includeArchived": { "type": "boolean" },
+        "initiativeId": { "type": "string" },
+        "limit": { "type": "number" },
+        "orderBy": { "type": "string", "enum": ["createdAt", "updatedAt"] },
+        "projectId": { "type": "string" },
+        "query": { "type": "string" },
+        "teamId": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      }
+    },
+    "get_document": {
+      "required": ["id"],
+      "props": {
+        "id": { "type": "string" }
+      }
+    },
+    "save_document": {
+      "required": [],
+      "props": {
+        "color": { "type": "string" },
+        "content": { "type": "string" },
+        "cycle": { "type": "string" },
+        "icon": { "type": "string" },
+        "id": { "type": "string" },
+        "initiative": { "type": "string" },
+        "issue": { "type": "string" },
+        "project": { "type": "string" },
+        "team": { "type": "string" },
+        "title": { "type": "string" }
+      }
+    },
     "list_comments": {
       "required": [],
       "props": {

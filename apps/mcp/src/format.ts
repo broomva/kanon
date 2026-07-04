@@ -206,6 +206,30 @@ export function formatStatusUpdate(update: BaseRecord): string {
   return lines.join("\n");
 }
 
+// Documents also live in other_entities — title/content/parent ride `data`.
+function documentParent(d: Record<string, unknown>): string {
+  const type = d.parentType;
+  const id = d.projectId ?? d.issueId ?? d.initiativeId ?? d.cycleId ?? d.teamId;
+  return id == null ? "—" : `${type != null ? `${String(type)} ` : ""}${String(id)}`;
+}
+export function formatDocumentList(documents: BaseRecord[]): string {
+  if (documents.length === 0) return "_No documents._";
+  return `## Documents (${documents.length})\n\n${documents
+    .map(
+      (doc) =>
+        `- **${String(doc.data.title ?? "(untitled)")}** — ${documentParent(doc.data)} \`${doc.id}\``,
+    )
+    .join("\n")}`;
+}
+export function formatDocument(document: BaseRecord): string {
+  const d = document.data;
+  const lines = [`# ${String(d.title ?? "(untitled)")}`, `- **ID**: ${document.id}`];
+  lines.push(`- **Parent**: ${documentParent(d)}`);
+  if (d.creatorId != null) lines.push(`- **Creator**: ${String(d.creatorId)}`);
+  if (typeof d.content === "string" && d.content.length > 0) lines.push("", d.content);
+  return lines.join("\n");
+}
+
 export function formatStateList(states: StateRecord[]): string {
   if (states.length === 0) return "_No statuses._";
   return `## Statuses (${states.length})\n\n${states

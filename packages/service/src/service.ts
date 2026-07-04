@@ -74,6 +74,7 @@ import {
   readDataRepoMeta,
   readyIssues,
   resolveActors,
+  resolveDocuments,
   resolveInitiatives,
   resolveLabels,
   resolveMilestones,
@@ -241,6 +242,27 @@ export interface StatusUpdateFilter {
   project?: string | undefined;
   initiative?: string | undefined;
   authorId?: string | undefined;
+}
+
+/** A Linear document is parented to exactly one of these; Kanon models 4 of 5. */
+const DOCUMENT_PARENTS = ["project", "issue", "initiative", "cycle", "team"] as const;
+type DocumentParent = (typeof DOCUMENT_PARENTS)[number];
+/** The `data` field each resolved parent id is stored under. */
+const DOCUMENT_PARENT_FIELDS: Record<DocumentParent, string> = {
+  project: "projectId",
+  issue: "issueId",
+  initiative: "initiativeId",
+  cycle: "cycleId",
+  team: "teamId",
+};
+
+/** Filters for `listDocuments` — parent (project/initiative/team), creator, title. */
+export interface DocumentFilter {
+  project?: string | undefined;
+  initiative?: string | undefined;
+  team?: string | undefined;
+  creatorId?: string | undefined;
+  query?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -954,6 +976,148 @@ export class KanonService {
       `kanon status_update update ${update.id}`,
     );
     return resolveStatusUpdates(this.db, update.id)[0] ?? null;
+  }
+
+  // -- documents (title + content on a parent; stored in other_entities) --------
+
+  /** Filter documents over the parsed `data` (parent / creator / title). */
+  listDocuments(filter: DocumentFilter = {}): BaseRecord[] {
+    let all = listModelEntities(this.db, "document");
+    if (filter.project !== undefined) {
+      const pid = resolveProjects(this.db, filter.project)[0]?.id;
+      all = pid === undefined ? [] : all.filter((d) => d.data.projectId === pid);
+    }
+    if (filter.initiative !== undefined) {
+      const iid = resolveInitiatives(this.db, filter.initiative)[0]?.id;
+      all = iid === undefined ? [] : all.filter((d) => d.data.initiativeId === iid);
+    }
+    if (filter.team !== undefined) {
+      const tid = resolveTeams(this.db, filter.team)[0]?.id;
+      all = tid === undefined ? [] : all.filter((d) => d.data.teamId === tid);
+    }
+    if (filter.creatorId !== undefined)
+      all = all.filter((d) => d.data.creatorId === filter.creatorId);
+    if (filter.query !== undefined) {
+      const q = filter.query.toLowerCase();
+      all = all.filter((d) =>
+        String(d.data.title ?? "")
+          .toLowerCase()
+          .includes(q),
+      );
+    }
+    return all;
+  }
+
+  private requireDocumentRef(ref: string): BaseRecord {
+    const first = resolveDocuments(this.db, ref)[0];
+    if (first === undefined) throw new ServiceError(404, `no document matching "${ref}"`);
+    return first;
+  }
+
+  /**
+   * Resolve the single parent a document must hang off. Enforces exactly-one of
+   * {project, issue, initiative, cycle, team} and returns the `data` field the
+   * resolved id is stored under. Cycles aren't modelled until M5b-3.
+   */
+  private resolveDocumentParent(body: Record<string, unknown>): { field: string; id: string } {
+    const provided = DOCUMENT_PARENTS.filter((k) => optionalString(body, k) !== undefined);
+    if (provided.length === 0) {
+      throw new ServiceError(
+        400,
+        `a document needs exactly one parent (${DOCUMENT_PARENTS.join(", ")})`,
+      );
+    }
+    if (provided.length > 1) {
+      throw new ServiceError(400, `a document has exactly one parent; got ${provided.join(", ")}`);
+    }
+    const kind = provided[0] as DocumentParent;
+    const ref = requireString(body, kind);
+    const field = DOCUMENT_PARENT_FIELDS[kind];
+    switch (kind) {
+      case "project": {
+        const p = resolveProjects(this.db, ref)[0];
+        if (p === undefined) throw new ServiceError(404, `no project matching "${ref}"`);
+        return { field, id: p.id };
+      }
+      case "initiative": {
+        const i = resolveInitiatives(this.db, ref)[0];
+        if (i === undefined) throw new ServiceError(404, `no initiative matching "${ref}"`);
+        return { field, id: i.id };
+      }
+      case "issue": {
+        const i = getIssue(this.db, ref);
+        if (i === undefined) throw new ServiceError(404, `no issue matching "${ref}"`);
+        return { field, id: i.id };
+      }
+      case "team": {
+        const t = resolveTeams(this.db, ref)[0];
+        if (t === undefined) throw new ServiceError(404, `no team matching "${ref}"`);
+        return { field, id: t.id };
+      }
+      default:
+        throw new ServiceError(
+          400,
+          "cycle-parented documents are unsupported until cycles land (M5b-3)",
+        );
+    }
+  }
+
+  createDocument(actor: EventActor, raw: unknown): BaseRecord | null {
+    const body = requireBody(raw);
+    const title = requireString(body, "title");
+    const parent = this.resolveDocumentParent(body);
+    const docId = ulid();
+    this.appendAsActor(
+      actor,
+      [
+        {
+          op: "create",
+          model: "document",
+          modelId: docId,
+          data: compact({
+            title,
+            content: optionalString(body, "content"),
+            parentType: parent.field.replace(/Id$/, ""),
+            [parent.field]: parent.id,
+            color: optionalString(body, "color"),
+            icon: optionalString(body, "icon"),
+            creatorId: actor.id,
+          }),
+        },
+      ],
+      `kanon document create ${title}`,
+    );
+    return resolveDocuments(this.db, docId)[0] ?? null;
+  }
+
+  /** PATCH-equivalent: title/content/color/icon, plus an optional reparent. */
+  updateDocument(actor: EventActor, ref: string, raw: unknown): BaseRecord | null {
+    const body = requireBody(raw);
+    const doc = this.requireDocumentRef(ref);
+    const data: Record<string, unknown> = compact({
+      title: optionalString(body, "title"),
+      content: optionalString(body, "content"),
+      color: optionalString(body, "color"),
+      icon: optionalString(body, "icon"),
+    });
+    // Optional reparent: exactly one parent arg → move it, clearing the others.
+    if (DOCUMENT_PARENTS.some((k) => optionalString(body, k) !== undefined)) {
+      const parent = this.resolveDocumentParent(body);
+      data.parentType = parent.field.replace(/Id$/, "");
+      data[parent.field] = parent.id;
+      for (const f of Object.values(DOCUMENT_PARENT_FIELDS)) {
+        if (f !== parent.field) data[f] = null;
+      }
+    }
+    if (Object.keys(data).length === 0) {
+      throw new ServiceError(400, "update requires at least one field");
+    }
+    this.appendAsActor(
+      actor,
+      [{ op: "update", model: "document", modelId: doc.id, data }],
+      `kanon document update ${String(doc.data.title ?? doc.id)}`,
+    );
+    return resolveDocuments(this.db, doc.id)[0] ?? null;
   }
 
   // -- issues -------------------------------------------------------------------

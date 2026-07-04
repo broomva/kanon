@@ -11,7 +11,7 @@
  * Kanon does not model every Linear concept (releases, cycles as
  * first-class); those args are accepted in the schema for call-site
  * compatibility and ignored or surfaced as unsupported by the handler.
- * Initiatives and status updates ARE modelled (they live in other_entities).
+ * Initiatives, status updates, and documents ARE modelled (other_entities).
  */
 
 export interface ToolSchema {
@@ -343,6 +343,73 @@ export const LINEAR_TOOL_SCHEMAS: Record<string, ToolSchema> = {
           type: "boolean",
           description: "Deprecated. Hide diff with previous update (create only)",
         },
+      },
+    },
+  },
+  list_documents: {
+    description: "List documents in the user's Linear workspace",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        projectId: str("Filter by project ID"),
+        initiativeId: str("Filter by initiative ID"),
+        teamId: str("Filter by team ID"),
+        creatorId: str("Filter by creator ID"),
+        query: str("Search query"),
+        createdAt: str("Created after: ISO-8601 date/duration (e.g., -P1D)"),
+        updatedAt: str("Updated after: ISO-8601 date/duration (e.g., -P1D)"),
+        cursor: str("Next page cursor"),
+        includeArchived: { type: "boolean", default: false, description: "Include archived items" },
+        limit: {
+          type: "number",
+          default: 50,
+          maximum: 250,
+          description: "Max results (default 50, max 250)",
+        },
+        orderBy: {
+          type: "string",
+          default: "updatedAt",
+          enum: ["createdAt", "updatedAt"],
+          description: "Sort: createdAt | updatedAt",
+        },
+      },
+    },
+  },
+  get_document: {
+    description: "Retrieve a Linear document by ID or slug",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id"],
+      properties: {
+        id: str("Document ID or slug"),
+      },
+    },
+  },
+  save_document: {
+    description:
+      "Create or update a Linear document. If `id` is provided, updates the existing document; otherwise creates a new one. When creating, `title` is required and exactly one parent (`project`, `issue`, `initiative`, `cycle`, or `team`) must be specified. On update, passing a parent reparents the document.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        id: str("Document ID or slug to update. Omit to create a new document."),
+        title: str("Document title (required when creating)"),
+        content: str(
+          "Content as Markdown. Do not escape the string — use literal newlines and special characters, not escape sequences. To mention a user, use @displayName (e.g., @johndoe)",
+        ),
+        project: str("Project name, ID, or slug"),
+        issue: str("Issue ID or identifier (e.g., LIN-123)"),
+        initiative: str("Initiative name or ID"),
+        cycle: str(
+          "Cycle name, number, or ID. When passing a name or number, also pass `team` to disambiguate.",
+        ),
+        team: str(
+          "Team name or ID. Attaches the document to the team, unless `cycle` is also passed, in which case it disambiguates the cycle.",
+        ),
+        color: str("Hex color"),
+        icon: str('Icon name or emoji code (e.g. "Rocket" or ":eagle:"), not a raw Unicode emoji'),
       },
     },
   },
