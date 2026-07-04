@@ -127,6 +127,34 @@
         "targetDate": { "type": "string" }
       }
     },
+    "get_status_updates": {
+      "required": ["type"],
+      "props": {
+        "createdAt": { "type": "string" },
+        "cursor": { "type": "string" },
+        "id": { "type": "string" },
+        "includeArchived": { "type": "boolean" },
+        "initiative": { "type": "string" },
+        "limit": { "type": "number" },
+        "orderBy": { "type": "string", "enum": ["createdAt", "updatedAt"] },
+        "project": { "type": "string" },
+        "type": { "type": "string", "enum": ["project", "initiative"] },
+        "updatedAt": { "type": "string" },
+        "user": { "type": "string" }
+      }
+    },
+    "save_status_update": {
+      "required": ["type"],
+      "props": {
+        "body": { "type": "string" },
+        "health": { "type": "string", "enum": ["onTrack", "atRisk", "offTrack"] },
+        "id": { "type": "string" },
+        "initiative": { "type": "string" },
+        "isDiffHidden": { "type": "boolean" },
+        "project": { "type": "string" },
+        "type": { "type": "string", "enum": ["project", "initiative"] }
+      }
+    },
     "list_comments": {
       "required": [],
       "props": {

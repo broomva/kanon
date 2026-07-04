@@ -79,6 +79,7 @@ import {
   resolveMilestones,
   resolveProjects,
   resolveStates,
+  resolveStatusUpdates,
   resolveTeams,
   type StateRecord,
   TEAM_KEY_PATTERN,
@@ -223,6 +224,23 @@ function describeCandidates(candidates: { id: string; name?: string | null }[]):
   return candidates
     .map((candidate) => `${candidate.id}${candidate.name ? ` (${candidate.name})` : ""}`)
     .join(", ");
+}
+
+const STATUS_UPDATE_HEALTH = ["onTrack", "atRisk", "offTrack"] as const;
+
+/** Guard the status-update health enum; undefined (unset) passes. */
+function assertHealth(health: string | undefined): void {
+  if (health !== undefined && !(STATUS_UPDATE_HEALTH as readonly string[]).includes(health)) {
+    throw new ServiceError(400, `health must be one of ${STATUS_UPDATE_HEALTH.join(" | ")}`);
+  }
+}
+
+/** Filters for `listStatusUpdates` — parent (project/initiative), type, author. */
+export interface StatusUpdateFilter {
+  type?: string | undefined;
+  project?: string | undefined;
+  initiative?: string | undefined;
+  authorId?: string | undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -860,6 +878,82 @@ export class KanonService {
       `kanon initiative update ${String(initiative.data.name ?? initiative.id)}`,
     );
     return resolveInitiatives(this.db, initiative.id)[0] ?? null;
+  }
+
+  // -- status updates (health on a project/initiative; stored in other_entities)
+
+  /** Filter status updates over the parsed `data` (parent/type/author). */
+  listStatusUpdates(filter: StatusUpdateFilter = {}): BaseRecord[] {
+    let all = listModelEntities(this.db, "status_update");
+    if (filter.type !== undefined) all = all.filter((u) => u.data.type === filter.type);
+    if (filter.project !== undefined) {
+      const pid = resolveProjects(this.db, filter.project)[0]?.id;
+      all = pid === undefined ? [] : all.filter((u) => u.data.projectId === pid);
+    }
+    if (filter.initiative !== undefined) {
+      const iid = resolveInitiatives(this.db, filter.initiative)[0]?.id;
+      all = iid === undefined ? [] : all.filter((u) => u.data.initiativeId === iid);
+    }
+    if (filter.authorId !== undefined) all = all.filter((u) => u.data.authorId === filter.authorId);
+    return all;
+  }
+
+  private requireStatusUpdateRef(ref: string): BaseRecord {
+    const first = resolveStatusUpdates(this.db, ref)[0];
+    if (first === undefined) throw new ServiceError(404, `no status update matching "${ref}"`);
+    return first;
+  }
+
+  createStatusUpdate(actor: EventActor, raw: unknown): BaseRecord | null {
+    const body = requireBody(raw);
+    const type = requireString(body, "type");
+    if (type !== "project" && type !== "initiative") {
+      throw new ServiceError(400, 'status update type must be "project" or "initiative"');
+    }
+    const health = optionalString(body, "health");
+    assertHealth(health);
+    const data: Record<string, unknown> = {
+      type,
+      health,
+      body: optionalString(body, "body"),
+      authorId: actor.id,
+    };
+    if (type === "project") {
+      const ref = requireString(body, "project");
+      const project = resolveProjects(this.db, ref)[0];
+      if (project === undefined) throw new ServiceError(404, `no project matching "${ref}"`);
+      data.projectId = project.id;
+    } else {
+      const ref = requireString(body, "initiative");
+      const initiative = resolveInitiatives(this.db, ref)[0];
+      if (initiative === undefined) throw new ServiceError(404, `no initiative matching "${ref}"`);
+      data.initiativeId = initiative.id;
+    }
+    const updateId = ulid();
+    this.appendAsActor(
+      actor,
+      [{ op: "create", model: "status_update", modelId: updateId, data: compact(data) }],
+      `kanon status_update create ${type} ${String(data.projectId ?? data.initiativeId)}`,
+    );
+    return resolveStatusUpdates(this.db, updateId)[0] ?? null;
+  }
+
+  /** PATCH-equivalent: only the mutable fields (health, body). */
+  updateStatusUpdate(actor: EventActor, ref: string, raw: unknown): BaseRecord | null {
+    const body = requireBody(raw);
+    const update = this.requireStatusUpdateRef(ref);
+    const health = optionalString(body, "health");
+    assertHealth(health);
+    const data = compact({ health, body: optionalString(body, "body") });
+    if (Object.keys(data).length === 0) {
+      throw new ServiceError(400, "update requires at least one field");
+    }
+    this.appendAsActor(
+      actor,
+      [{ op: "update", model: "status_update", modelId: update.id, data }],
+      `kanon status_update update ${update.id}`,
+    );
+    return resolveStatusUpdates(this.db, update.id)[0] ?? null;
   }
 
   // -- issues -------------------------------------------------------------------
