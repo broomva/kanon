@@ -8,9 +8,10 @@
  * Kanon-backed `linear-server`. `parity.test.ts` asserts the server's
  * `tools/list` output equals this oracle — drift here is a parity break.
  *
- * Kanon does not model every Linear concept (initiatives, releases, cycles
- * as first-class); those args are accepted in the schema for call-site
+ * Kanon does not model every Linear concept (releases, cycles as
+ * first-class); those args are accepted in the schema for call-site
  * compatibility and ignored or surfaced as unsupported by the handler.
+ * Initiatives ARE modelled (list/get/save; they live in other_entities).
  */
 
 export interface ToolSchema {
@@ -193,6 +194,88 @@ export const LINEAR_TOOL_SCHEMAS: Record<string, ToolSchema> = {
         state: str("Project state"),
         targetDate: str("Target date (ISO format)"),
         startDate: str("Start date (ISO format)"),
+      },
+    },
+  },
+  list_initiatives: {
+    description: "List initiatives in the user's Linear workspace",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        createdAt: str("Created after: ISO-8601 date/duration (e.g., -P1D)"),
+        cursor: str("Next page cursor"),
+        includeArchived: { type: "boolean", default: false, description: "Include archived items" },
+        includeProjects: { type: "boolean", default: false, description: "Include projects" },
+        includeSubInitiatives: {
+          type: "boolean",
+          default: false,
+          description: "Include sub-initiatives",
+        },
+        limit: {
+          type: "number",
+          default: 50,
+          maximum: 250,
+          description: "Max results (default 50, max 250)",
+        },
+        orderBy: {
+          type: "string",
+          default: "updatedAt",
+          enum: ["createdAt", "updatedAt"],
+          description: "Sort: createdAt | updatedAt",
+        },
+        owner: str('User ID, name, email, or "me"'),
+        parentInitiative: str("Parent initiative name or ID"),
+        query: str("Search initiative name"),
+        status: str("Status of the initiative"),
+        updatedAt: str("Updated after: ISO-8601 date/duration (e.g., -P1D)"),
+      },
+    },
+  },
+  get_initiative: {
+    description: "Retrieve detailed information about a specific initiative in Linear",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["query"],
+      properties: {
+        includeProjects: { type: "boolean", default: false, description: "Include projects" },
+        includeSubInitiatives: {
+          type: "boolean",
+          default: false,
+          description: "Include sub-initiatives",
+        },
+        query: str("Initiative ID or name"),
+      },
+    },
+  },
+  save_initiative: {
+    description:
+      "Create or update a Linear initiative. If `id` is provided, updates the existing initiative; otherwise creates a new one. When creating, `name` is required.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        id: str("Initiative ID. If provided, updates the existing initiative"),
+        name: str("Initiative name (required when creating)"),
+        description: str("Content as Markdown."),
+        summary: str("Short summary (max 255 chars)"),
+        status: str("Initiative status (Proposed, Planned, Active, Completed, Canceled)"),
+        owner: { description: 'User ID, name, email, or "me". Null to remove' },
+        priority: {
+          type: "integer",
+          minimum: 0,
+          maximum: 4,
+          description: "0=None, 1=Urgent, 2=High, 3=Medium, 4=Low",
+        },
+        targetDate: str("Target date (ISO format)"),
+        color: str("Hex color"),
+        icon: str('Icon name or emoji code (e.g. "Rocket" or ":eagle:"), not a raw Unicode emoji'),
+        parentInitiatives: {
+          type: "array",
+          items: { type: "string" },
+          description: "Parent initiative names or IDs to add. Appended to existing parents",
+        },
       },
     },
   },

@@ -236,6 +236,15 @@ export function createApp(service: KanonService, config: ServerConfig): Hono<App
     c.json({ project: service.createProject(c.get("actor"), await jsonBody(c.req.raw)) }, 201),
   );
 
+  app.get("/v1/initiatives", (c) => c.json({ initiatives: service.listInitiatives() }));
+
+  app.post("/v1/initiatives", async (c) =>
+    c.json(
+      { initiative: service.createInitiative(c.get("actor"), await jsonBody(c.req.raw)) },
+      201,
+    ),
+  );
+
   // -- webhooks -----------------------------------------------------------------
   app.get("/v1/webhooks", (c) => c.json({ webhooks: service.listWebhooks() }));
 

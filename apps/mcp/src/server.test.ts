@@ -162,6 +162,31 @@ describe("kanon MCP server", () => {
     expect(text(await call(client, "get_project", { query: "Kanon" }))).toContain("tracker");
   });
 
+  test("save_initiative create + update; list + get; duplicate name rejected", async () => {
+    const { client } = await boot();
+    const created = await call(client, "save_initiative", {
+      name: "Agent OS",
+      description: "umbrella",
+      status: "Active",
+      targetDate: "2027-09-30",
+    });
+    expect(created.isError).toBeFalsy();
+    const id = text(created).match(/\*\*ID\*\*: ([0-9A-HJKMNP-TV-Z]{26})/)?.[1];
+    expect(id).toBeDefined();
+
+    expect(text(await call(client, "list_initiatives", {}))).toContain("Agent OS");
+    const got = text(await call(client, "get_initiative", { query: "Agent OS" }));
+    expect(got).toContain("umbrella");
+    expect(got).toContain("Active");
+
+    const updated = await call(client, "save_initiative", { id, status: "Completed" });
+    expect(updated.isError).toBeFalsy();
+    expect(text(updated)).toContain("Completed");
+
+    const dup = await call(client, "save_initiative", { name: "Agent OS" });
+    expect(dup.isError).toBe(true);
+  });
+
   test("unknown issue → isError, not a protocol crash", async () => {
     const { client } = await boot();
     const result = await call(client, "get_issue", { id: "BRO-999" });

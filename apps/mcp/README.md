@@ -91,7 +91,7 @@ mounts this same tool surface over streamable HTTP at `/mcp`.
 ## Not yet
 
 Cursor pagination and the remaining Linear tools Kanon doesn't yet model
-(documents, initiatives, status updates, first-class cycle scheduling).
+(documents, status updates, first-class cycle scheduling).
 
 ## Test
 
