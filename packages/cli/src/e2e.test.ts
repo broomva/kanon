@@ -749,3 +749,49 @@ describe("doctor — relation edges", () => {
     expect(report.relationDuplicates.length).toBe(0);
   });
 });
+
+describe("two-clone relation dedupe", () => {
+  test("same edge minted on two clones: sync doctor dedups it; unrelate clears it", () => {
+    const root = tempDir();
+    const origin = join(root, "origin.git");
+    const cloneA = join(root, "a");
+    const cloneB = join(root, "b");
+    git(root, "init", "--bare", "origin.git");
+
+    git(root, "clone", origin, "a");
+    ok(["init", cloneA, "--workspace", "acme"]);
+    gitIdentity(cloneA);
+    ok(["team", "create", "--key", "BRO", "--name", "Broomva", "--repo", cloneA]);
+    ok(["issue", "create", "--team", "BRO", "--title", "X", "--repo", cloneA]);
+    ok(["issue", "create", "--team", "BRO", "--title", "Y", "--repo", cloneA]);
+    ok(["sync", "--repo", cloneA]);
+
+    git(root, "clone", origin, "b");
+    gitIdentity(cloneB);
+
+    // Offline: BOTH clones relate the SAME edge BRO-1 blocks BRO-2 → two
+    // relation entities (different ULIDs) for one logical edge.
+    ok(["issue", "relate", "BRO-1", "--blocks", "BRO-2", "--repo", cloneA]);
+    ok(["issue", "relate", "BRO-1", "--blocks", "BRO-2", "--repo", cloneB]);
+    ok(["sync", "--repo", cloneA]);
+    // B's sync unions in A's relate → two entities → the in-sync doctor dedups.
+    const bSync = JSON.parse(ok(["sync", "--repo", cloneB, "--json"])) as {
+      steps: { step: string; detail: string }[];
+    };
+    expect(bSync.steps.find((step) => step.step === "doctor")?.detail ?? "").toContain("deduped");
+    ok(["sync", "--repo", cloneA]);
+
+    // BRO-2 is blocked by the open BRO-1 → not ready.
+    const before = JSON.parse(
+      ok(["issue", "ready", "--team", "BRO", "--repo", cloneA, "--json"]),
+    ) as { identifier: string }[];
+    expect(before.map((issue) => issue.identifier)).not.toContain("BRO-2");
+
+    // unrelate tombstones EVERY entity for the edge → BRO-2 unblocked.
+    ok(["issue", "unrelate", "BRO-1", "--blocks", "BRO-2", "--repo", cloneA]);
+    const after = JSON.parse(
+      ok(["issue", "ready", "--team", "BRO", "--repo", cloneA, "--json"]),
+    ) as { identifier: string }[];
+    expect(after.map((issue) => issue.identifier)).toContain("BRO-2");
+  }, 60_000);
+});

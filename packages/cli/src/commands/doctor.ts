@@ -223,31 +223,42 @@ function detectBlockingCycles(db: RepoContext["projection"]["db"]): string[][] {
   const GREY = 1;
   const BLACK = 2;
   const color = new Map<string, number>();
-  const stack: string[] = [];
   const found = new Map<string, string[]>();
 
-  const visit = (node: string): void => {
-    color.set(node, GREY);
-    stack.push(node);
-    for (const next of adjacency.get(node) ?? []) {
-      const state = color.get(next) ?? WHITE;
-      if (state === GREY) {
-        const start = stack.indexOf(next);
-        if (start !== -1) {
-          const cycle = stack.slice(start);
-          const canonical = [...cycle].sort().join("|");
-          if (!found.has(canonical)) found.set(canonical, cycle);
+  // Iterative DFS (explicit frame stack) so a deep blocks-chain can't overflow
+  // the JS call stack. `path` mirrors the grey ancestors; a grey back-edge to a
+  // node on `path` closes a cycle.
+  for (const root of adjacency.keys()) {
+    if ((color.get(root) ?? WHITE) !== WHITE) continue;
+    const frames: { node: string; next: number }[] = [{ node: root, next: 0 }];
+    const path: string[] = [root];
+    color.set(root, GREY);
+    while (frames.length > 0) {
+      const frame = frames[frames.length - 1];
+      if (frame === undefined) break;
+      const neighbours = adjacency.get(frame.node) ?? [];
+      const child = frame.next < neighbours.length ? neighbours[frame.next] : undefined;
+      if (child !== undefined) {
+        frame.next += 1;
+        const state = color.get(child) ?? WHITE;
+        if (state === GREY) {
+          const start = path.indexOf(child);
+          if (start !== -1) {
+            const cycle = path.slice(start);
+            const canonical = [...cycle].sort().join("|");
+            if (!found.has(canonical)) found.set(canonical, cycle);
+          }
+        } else if (state === WHITE) {
+          color.set(child, GREY);
+          path.push(child);
+          frames.push({ node: child, next: 0 });
         }
-      } else if (state === WHITE) {
-        visit(next);
+      } else {
+        color.set(frame.node, BLACK);
+        frames.pop();
+        path.pop();
       }
     }
-    stack.pop();
-    color.set(node, BLACK);
-  };
-
-  for (const node of adjacency.keys()) {
-    if ((color.get(node) ?? WHITE) === WHITE) visit(node);
   }
 
   const identifierOf = (id: string): string => {
