@@ -358,6 +358,33 @@ describe("cycles", () => {
   });
 });
 
+describe("saved views", () => {
+  test("POST creates a named view; GET lists it; name required + unique", async () => {
+    const { url } = boot();
+    const created = await ok(url, "POST", "/v1/views", {
+      name: "My urgent bugs",
+      description: "triage queue",
+      team: "BRO",
+      priority: 1,
+      query: "bug",
+    });
+    const view = created.view as { id: string; data: Record<string, unknown> };
+    expect(view.id).toHaveLength(26);
+    expect(view.data.name).toBe("My urgent bugs");
+    expect(view.data.priority).toBe(1);
+
+    const list = await ok(url, "GET", "/v1/views");
+    const views = list.views as { data: Record<string, unknown> }[];
+    expect(views.some((v) => v.data.name === "My urgent bugs" && v.data.query === "bug")).toBe(
+      true,
+    );
+
+    // name required → 400; duplicate name → 409
+    expect((await api(url, "POST", "/v1/views", { team: "BRO" })).status).toBe(400);
+    expect((await api(url, "POST", "/v1/views", { name: "My urgent bugs" })).status).toBe(409);
+  });
+});
+
 describe("catalog", () => {
   test("returns the workspace + resolvable teams/states/projects/labels/actors", async () => {
     const { url } = boot();

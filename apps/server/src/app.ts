@@ -266,6 +266,12 @@ export function createApp(service: KanonService, config: ServerConfig): Hono<App
     c.json({ cycle: service.createCycle(c.get("actor"), await jsonBody(c.req.raw)) }, 201),
   );
 
+  app.get("/v1/views", (c) => c.json({ views: service.listSavedViews() }));
+
+  app.post("/v1/views", async (c) =>
+    c.json({ view: service.createSavedView(c.get("actor"), await jsonBody(c.req.raw)) }, 201),
+  );
+
   // -- webhooks -----------------------------------------------------------------
   app.get("/v1/webhooks", (c) => c.json({ webhooks: service.listWebhooks() }));
 

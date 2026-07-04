@@ -321,6 +321,40 @@ describe("kanon MCP server", () => {
     expect((await call(client, "save_cycle", { name: "Orphan" })).isError).toBe(true);
   });
 
+  test("save_view create + update; list + get (name & ULID); unique name; filter round-trips", async () => {
+    const { client } = await boot();
+    const created = await call(client, "save_view", {
+      name: "My urgent bugs",
+      description: "triage queue",
+      team: "BRO",
+      priority: 1,
+      query: "bug",
+    });
+    expect(created.isError).toBeFalsy();
+    const id = text(created).match(/\*\*ID\*\*: ([0-9A-HJKMNP-TV-Z]{26})/)?.[1];
+    expect(id).toBeDefined();
+
+    expect(text(await call(client, "list_views", {}))).toContain("My urgent bugs");
+    const got = text(await call(client, "get_view", { query: "My urgent bugs" }));
+    expect(got).toContain("team=BRO");
+    expect(got).toContain("priority=1");
+    expect(got).toContain("query=bug");
+    expect(got).toContain("triage queue");
+
+    // rename + change one filter field; the other fields survive (field-level LWW)
+    const updated = await call(client, "save_view", { id, name: "My high bugs", priority: 2 });
+    expect(updated.isError).toBeFalsy();
+    expect(text(updated)).toContain("My high bugs");
+    expect(text(updated)).toContain("priority=2");
+    expect(text(updated)).toContain("query=bug");
+
+    // get by ULID resolves the same view
+    expect(text(await call(client, "get_view", { query: id }))).toContain("My high bugs");
+
+    // duplicate name rejected
+    expect((await call(client, "save_view", { name: "My high bugs" })).isError).toBe(true);
+  });
+
   test("unknown issue → isError, not a protocol crash", async () => {
     const { client } = await boot();
     const result = await call(client, "get_issue", { id: "BRO-999" });

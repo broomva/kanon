@@ -114,6 +114,48 @@ export const KANON_TOOL_SCHEMAS: Record<string, ToolSchema> = {
       },
     },
   },
+  list_views: {
+    description:
+      "List saved views — named, reusable issue-list filters (Kanon-native; Linear's MCP has no " +
+      "view tools). Re-run one by reading its filter and passing it to list_issues.",
+    inputSchema: { type: "object", additionalProperties: false, properties: {} },
+  },
+  get_view: {
+    description: "Retrieve one saved view by name or ID, showing its stored issue-list filter.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["query"],
+      properties: { query: str("Saved view name or ID") },
+    },
+  },
+  save_view: {
+    description:
+      "Create or update a saved view — a named, reusable issue-list filter " +
+      "(team/state/assignee/project/label/priority/query). If `id` is provided, updates the " +
+      "existing view; otherwise creates a new one. When creating, `name` is required and unique.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        id: str("Saved view ID (ULID). If provided, updates the existing view"),
+        name: str("View name (required when creating; must be unique)"),
+        description: str("What the view is for"),
+        team: str("Team filter: key, name, or ID"),
+        state: str("State filter: type or name"),
+        assignee: str('Assignee filter: ULID, name, email, or "me"'),
+        project: str("Project filter: name, ID, or slug"),
+        label: str("Label filter: name or ID"),
+        priority: {
+          type: "integer",
+          minimum: 0,
+          maximum: 4,
+          description: "Priority filter: 0=None, 1=Urgent, 2=High, 3=Medium, 4=Low",
+        },
+        query: str("Text search filter"),
+      },
+    },
+  },
 };
 
 export type KanonToolName = keyof typeof KANON_TOOL_SCHEMAS;

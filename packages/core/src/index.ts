@@ -43,6 +43,7 @@ export const MODELS = [
   "status_update",
   "document",
   "cycle",
+  "saved_view",
   "comment",
   "agent_session",
   "agent_activity",
