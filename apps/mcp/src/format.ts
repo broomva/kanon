@@ -259,6 +259,39 @@ export function formatCycle(cycle: BaseRecord): string {
   return lines.join("\n");
 }
 
+// Saved views also live in other_entities — a name + the stored filter fields.
+const SAVED_VIEW_FILTER_KEYS = [
+  "team",
+  "state",
+  "assignee",
+  "project",
+  "label",
+  "priority",
+  "query",
+];
+function savedViewFilterSummary(d: Record<string, unknown>): string {
+  const parts = SAVED_VIEW_FILTER_KEYS.filter((k) => d[k] != null).map(
+    (k) => `${k}=${String(d[k])}`,
+  );
+  return parts.length === 0 ? "_no filters_" : parts.join(", ");
+}
+export function formatSavedViewList(views: BaseRecord[]): string {
+  if (views.length === 0) return "_No saved views._";
+  return `## Saved views (${views.length})\n\n${views
+    .map(
+      (v) =>
+        `- **${String(v.data.name ?? "(unnamed)")}** — ${savedViewFilterSummary(v.data)} \`${v.id}\``,
+    )
+    .join("\n")}`;
+}
+export function formatSavedView(view: BaseRecord): string {
+  const d = view.data;
+  const lines = [`# ${String(d.name ?? "(unnamed)")}`, `- **ID**: ${view.id}`];
+  lines.push(`- **Filter**: ${savedViewFilterSummary(d)}`);
+  if (typeof d.description === "string" && d.description.length > 0) lines.push("", d.description);
+  return lines.join("\n");
+}
+
 export function formatStateList(states: StateRecord[]): string {
   if (states.length === 0) return "_No statuses._";
   return `## Statuses (${states.length})\n\n${states

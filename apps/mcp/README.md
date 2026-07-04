@@ -61,11 +61,14 @@ The **Linear parity set** — input schemas ported **verbatim** from the live
 | `list_issue_statuses` | `listStates` | team workflow states |
 | `list_issue_labels` | `listLabels` | |
 | `list_users` | `listActors` | |
-| `list_cycles` | `listModelEntities("cycle")` | Kanon doesn't schedule cycles in v1 |
+| `list_initiatives` / `get_initiative` / `save_initiative` | `listInitiatives` / `resolveInitiatives` / `createInitiative` / `updateInitiative` | umbrella over projects; unique name |
+| `get_status_updates` / `save_status_update` | `listStatusUpdates` / `createStatusUpdate` / `updateStatusUpdate` | health (onTrack/atRisk/offTrack) on a project or initiative; `get` returns a single by `id` else a filtered list |
+| `list_documents` / `get_document` / `save_document` | `listDocuments` / `createDocument` / `updateDocument` | title + content parented to exactly one of project/issue/initiative/cycle/team; update reparents |
+| `list_cycles` | `listCycles` | team-scoped; `type` = `current`/`previous`/`next` window vs now (writes are the `save_cycle`/`get_cycle` extensions below) |
 
-The **Kanon extension set** — the agent-session/activity platform
-(`src/kanon-schemas.ts`; NOT part of the Linear oracle, since Linear's MCP has
-no session tools):
+The **Kanon extension set** (`src/kanon-schemas.ts`; NOT part of the Linear
+oracle — these have no `linear-server` equivalent, and `parity.test.ts` asserts
+they never collide with an oracle tool name):
 
 | Tool | Maps to | Notes |
 |---|---|---|
@@ -73,6 +76,8 @@ no session tools):
 | `list_agent_sessions` | `agentSessions` | filter by `issue` / `agent` / `state` |
 | `get_agent_session` | `agentSessionDetail` | session + issue + the full activity timeline |
 | `append_agent_activity` | `appendAgentActivity` | append to the timeline; session state moves with the activity type |
+| `save_cycle` / `get_cycle` | `createCycle` / `updateCycle` / `resolveCycles` | cycle writes (Linear's MCP exposes cycles read-only via `list_cycles`) |
+| `list_views` / `get_view` / `save_view` | `listSavedViews` / `createSavedView` / `updateSavedView` | Kanon-native named issue-list filters (team/state/assignee/project/label/priority/query); unique name; re-run via `list_issues` |
 
 Tool errors are returned as MCP `isError` results (message text), never thrown
 as protocol errors, so an agent sees the reason and can recover.

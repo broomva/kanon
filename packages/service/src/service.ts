@@ -80,6 +80,7 @@ import {
   resolveLabels,
   resolveMilestones,
   resolveProjects,
+  resolveSavedViews,
   resolveStates,
   resolveStatusUpdates,
   resolveTeams,
@@ -1223,6 +1224,96 @@ export class KanonService {
       `kanon cycle update ${String(cycle.data.name ?? cycle.id)}`,
     );
     return resolveCycles(this.db, cycle.id)[0] ?? null;
+  }
+
+  // -- saved views (Kanon-native named issue-list filters; other_entities) ------
+
+  listSavedViews(): BaseRecord[] {
+    return listModelEntities(this.db, "saved_view");
+  }
+
+  private requireSavedViewRef(ref: string): BaseRecord {
+    const matches = resolveSavedViews(this.db, ref);
+    if (matches.length > 1) {
+      throw new ServiceError(
+        400,
+        `ambiguous saved view "${ref}" — candidates: ${matches.map((m) => m.id).join(", ")}`,
+      );
+    }
+    const first = matches[0];
+    if (first === undefined) throw new ServiceError(404, `no saved view matching "${ref}"`);
+    return first;
+  }
+
+  /**
+   * The stored filter mirrors the `list_issues` args an agent re-runs it with.
+   * Fields are overwrite-only (`optionalString`, not tri-state): an update can
+   * change a criterion but not null it back to unset — dropping a filter is a
+   * delete-and-recreate in v1, deliberately, to keep create/update symmetric.
+   */
+  private savedViewFilter(body: Record<string, unknown>): Record<string, unknown> {
+    return {
+      team: optionalString(body, "team"),
+      state: optionalString(body, "state"),
+      assignee: optionalString(body, "assignee"),
+      project: optionalString(body, "project"),
+      label: optionalString(body, "label"),
+      priority: optionalInt(body, "priority", 0, 4),
+      query: optionalString(body, "query"),
+    };
+  }
+
+  createSavedView(actor: EventActor, raw: unknown): BaseRecord | null {
+    const body = requireBody(raw);
+    const name = requireString(body, "name");
+    if (resolveSavedViews(this.db, name).length > 0) {
+      throw new ServiceError(409, `a saved view named "${name}" already exists`);
+    }
+    const viewId = ulid();
+    this.appendAsActor(
+      actor,
+      [
+        {
+          op: "create",
+          model: "saved_view",
+          modelId: viewId,
+          data: compact({
+            name,
+            description: optionalString(body, "description"),
+            ...this.savedViewFilter(body),
+          }),
+        },
+      ],
+      `kanon saved_view create ${name}`,
+    );
+    return resolveSavedViews(this.db, viewId)[0] ?? null;
+  }
+
+  /** PATCH-equivalent: name (uniqueness enforced), description, plus the filter. */
+  updateSavedView(actor: EventActor, ref: string, raw: unknown): BaseRecord | null {
+    const body = requireBody(raw);
+    const view = this.requireSavedViewRef(ref);
+    const name = optionalString(body, "name");
+    if (name !== undefined) {
+      const clash = resolveSavedViews(this.db, name).filter((m) => m.id !== view.id);
+      if (clash.length > 0) {
+        throw new ServiceError(409, `a saved view named "${name}" already exists`);
+      }
+    }
+    const data = compact({
+      name,
+      description: optionalString(body, "description"),
+      ...this.savedViewFilter(body),
+    });
+    if (Object.keys(data).length === 0) {
+      throw new ServiceError(400, "update requires at least one field");
+    }
+    this.appendAsActor(
+      actor,
+      [{ op: "update", model: "saved_view", modelId: view.id, data }],
+      `kanon saved_view update ${String(view.data.name ?? view.id)}`,
+    );
+    return resolveSavedViews(this.db, view.id)[0] ?? null;
   }
 
   // -- issues -------------------------------------------------------------------

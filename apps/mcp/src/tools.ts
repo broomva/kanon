@@ -26,6 +26,7 @@ import {
   resolveDocuments,
   resolveInitiatives,
   resolveProjects,
+  resolveSavedViews,
   resolveStatusUpdates,
   resolveTeams,
 } from "@kanon/store";
@@ -43,6 +44,8 @@ import {
   formatLabelList,
   formatProject,
   formatProjectList,
+  formatSavedView,
+  formatSavedViewList,
   formatStateList,
   formatStatusUpdate,
   formatStatusUpdateList,
@@ -474,6 +477,37 @@ export const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
         : ctx.service.updateCycle(ctx.actor, id, fields);
     if (cycle === null) throw new ServiceError(500, "cycle save returned no record");
     return formatCycle(cycle);
+  },
+
+  list_views(_args, ctx) {
+    return formatSavedViewList(ctx.service.listSavedViews());
+  },
+
+  get_view(args, ctx) {
+    const query = requireStr(args, "query");
+    const view = resolveSavedViews(ctx.service.db, query)[0];
+    if (view === undefined) throw new ServiceError(404, `no saved view matching "${query}"`);
+    return formatSavedView(view);
+  },
+
+  save_view(args, ctx) {
+    const id = str(args, "id");
+    const fields = clean({
+      description: str(args, "description"),
+      team: str(args, "team"),
+      state: str(args, "state"),
+      assignee: str(args, "assignee"),
+      project: str(args, "project"),
+      label: str(args, "label"),
+      priority: typeof args.priority === "number" ? args.priority : undefined,
+      query: str(args, "query"),
+    });
+    const view =
+      id === undefined
+        ? ctx.service.createSavedView(ctx.actor, { ...fields, name: requireStr(args, "name") })
+        : ctx.service.updateSavedView(ctx.actor, id, clean({ ...fields, name: str(args, "name") }));
+    if (view === null) throw new ServiceError(500, "saved view save returned no record");
+    return formatSavedView(view);
   },
 
   // -- Kanon extensions: agent-session platform (M3 Phase 2) -------------------

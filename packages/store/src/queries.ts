@@ -113,6 +113,22 @@ export function resolveCycles(db: Database, ref: string): BaseRecord[] {
   return listModelEntities(db, "cycle").filter((rec) => rec.id === ref);
 }
 
+/**
+ * Saved views live in `other_entities` (no dedicated table — low volume). A
+ * saved view is a Kanon-native named issue-list filter with a UNIQUE name, so
+ * resolution mirrors `resolveInitiatives`: ULID → exact name (case-insensitive),
+ * returning ALL matches so callers can error on an ambiguous name.
+ */
+export function resolveSavedViews(db: Database, ref: string): BaseRecord[] {
+  const all = listModelEntities(db, "saved_view");
+  if (ULID_PATTERN.test(ref)) {
+    const byId = all.filter((rec) => rec.id === ref);
+    if (byId.length > 0) return byId;
+  }
+  const lower = ref.toLowerCase();
+  return all.filter((rec) => String(rec.data.name ?? "").toLowerCase() === lower);
+}
+
 // ---------------------------------------------------------------------------
 // Teams
 // ---------------------------------------------------------------------------
