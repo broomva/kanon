@@ -8,9 +8,10 @@
  * Kanon-backed `linear-server`. `parity.test.ts` asserts the server's
  * `tools/list` output equals this oracle — drift here is a parity break.
  *
- * Kanon does not model every Linear concept (initiatives, releases, cycles
- * as first-class); those args are accepted in the schema for call-site
+ * Kanon does not model every Linear concept (releases, cycles as
+ * first-class); those args are accepted in the schema for call-site
  * compatibility and ignored or surfaced as unsupported by the handler.
+ * Initiatives ARE modelled (list/get/save; they live in other_entities).
  */
 
 export interface ToolSchema {
