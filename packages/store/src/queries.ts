@@ -92,6 +92,17 @@ export function resolveStatusUpdates(db: Database, ref: string): BaseRecord[] {
   return listModelEntities(db, "status_update").filter((rec) => rec.id === ref);
 }
 
+/**
+ * Documents live in `other_entities` (no dedicated table — the title isn't
+ * unique, and the only filtering, by parent/creator/title, the service does
+ * over parsed `data`). Resolution is ULID-only (Linear also accepts a slug,
+ * which Kanon doesn't mint), so a single record or none.
+ */
+export function resolveDocuments(db: Database, ref: string): BaseRecord[] {
+  if (!ULID_PATTERN.test(ref)) return [];
+  return listModelEntities(db, "document").filter((rec) => rec.id === ref);
+}
+
 // ---------------------------------------------------------------------------
 // Teams
 // ---------------------------------------------------------------------------

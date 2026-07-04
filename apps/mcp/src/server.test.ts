@@ -236,6 +236,45 @@ describe("kanon MCP server", () => {
     ).toBe(true);
   });
 
+  test("save_document create + reparent update; get + list + parent filter; exactly-one-parent", async () => {
+    const { client } = await boot();
+    await call(client, "save_project", { name: "Kanon", description: "tracker" });
+    await call(client, "save_project", { name: "Other", description: "second" });
+
+    const created = await call(client, "save_document", {
+      title: "Design doc",
+      content: "the plan",
+      project: "Kanon",
+    });
+    expect(created.isError).toBeFalsy();
+    const id = text(created).match(/\*\*ID\*\*: ([0-9A-HJKMNP-TV-Z]{26})/)?.[1];
+    expect(id).toBeDefined();
+
+    expect(text(await call(client, "list_documents", {}))).toContain("Design doc");
+    const got = text(await call(client, "get_document", { id }));
+    expect(got).toContain("the plan");
+    expect(got).toContain("project");
+
+    // reparent to Other + rename; content is untouched → survives (field-level LWW)
+    const updated = await call(client, "save_document", { id, title: "Renamed", project: "Other" });
+    expect(updated.isError).toBeFalsy();
+    expect(text(updated)).toContain("Renamed");
+    expect(text(updated)).toContain("the plan");
+
+    // filter follows the reparent: new parent finds it, old parent is empty
+    expect(text(await call(client, "list_documents", { projectId: "Other" }))).toContain("Renamed");
+    expect(text(await call(client, "list_documents", { projectId: "Kanon" }))).toContain(
+      "_No documents._",
+    );
+
+    // no parent on create → error; two parents → error
+    expect((await call(client, "save_document", { title: "Orphan" })).isError).toBe(true);
+    expect(
+      (await call(client, "save_document", { title: "Two", project: "Kanon", team: "BRO" }))
+        .isError,
+    ).toBe(true);
+  });
+
   test("unknown issue → isError, not a protocol crash", async () => {
     const { client } = await boot();
     const result = await call(client, "get_issue", { id: "BRO-999" });

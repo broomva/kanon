@@ -9,8 +9,8 @@
  * Kanon deliberately doesn't model some Linear concepts (releases, first-class
  * cycles); those args are accepted for call-site compatibility and either
  * ignored or answered with an explicit "not in Kanon v1" note rather than a
- * hard failure. Initiatives and status updates ARE modelled (they live in
- * `other_entities`; see the handlers below).
+ * hard failure. Initiatives, status updates, and documents ARE modelled (they
+ * live in `other_entities`; see the handlers below).
  */
 
 import type { EventActor } from "@kanon/core";
@@ -23,6 +23,7 @@ import {
   listLabels,
   listModelEntities,
   listStates,
+  resolveDocuments,
   resolveInitiatives,
   resolveProjects,
   resolveStatusUpdates,
@@ -31,6 +32,8 @@ import {
 import {
   formatAgentSession,
   formatAgentSessionList,
+  formatDocument,
+  formatDocumentList,
   formatInitiative,
   formatInitiativeList,
   formatIssueDetail,
@@ -327,6 +330,48 @@ export const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
         : ctx.service.updateStatusUpdate(ctx.actor, id, fields);
     if (update === null) throw new ServiceError(500, "status update save returned no record");
     return formatStatusUpdate(update);
+  },
+
+  list_documents(args, ctx) {
+    // Linear names the parent filters with an `Id` suffix; Kanon resolves refs.
+    return formatDocumentList(
+      ctx.service.listDocuments({
+        project: str(args, "projectId"),
+        initiative: str(args, "initiativeId"),
+        team: str(args, "teamId"),
+        creatorId: str(args, "creatorId"),
+        query: str(args, "query"),
+      }),
+    );
+  },
+
+  get_document(args, ctx) {
+    const id = requireStr(args, "id");
+    const document = resolveDocuments(ctx.service.db, id)[0];
+    if (document === undefined) throw new ServiceError(404, `no document matching "${id}"`);
+    return formatDocument(document);
+  },
+
+  save_document(args, ctx) {
+    const id = str(args, "id");
+    // Parent refs apply on both create (exactly one required) and update (reparent).
+    const fields = clean({
+      title: str(args, "title"),
+      content: str(args, "content"),
+      color: str(args, "color"),
+      icon: str(args, "icon"),
+      project: str(args, "project"),
+      issue: str(args, "issue"),
+      initiative: str(args, "initiative"),
+      cycle: str(args, "cycle"),
+      team: str(args, "team"),
+    });
+    const document =
+      id === undefined
+        ? ctx.service.createDocument(ctx.actor, fields)
+        : ctx.service.updateDocument(ctx.actor, id, fields);
+    if (document === null) throw new ServiceError(500, "document save returned no record");
+    return formatDocument(document);
   },
 
   list_comments(args, ctx) {

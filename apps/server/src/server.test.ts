@@ -297,6 +297,40 @@ describe("status updates", () => {
   });
 });
 
+describe("documents", () => {
+  test("POST creates a doc on a project; GET lists it; exactly-one-parent enforced", async () => {
+    const { url } = boot();
+    await ok(url, "POST", "/v1/projects", { name: "Kanon", description: "tracker" });
+
+    const created = await ok(url, "POST", "/v1/documents", {
+      title: "Design doc",
+      content: "the plan",
+      project: "Kanon",
+    });
+    const doc = created.document as { id: string; data: Record<string, unknown> };
+    expect(doc.id).toHaveLength(26);
+    expect(doc.data.parentType).toBe("project");
+
+    const list = await ok(url, "GET", "/v1/documents");
+    const documents = list.documents as { data: Record<string, unknown> }[];
+    expect(
+      documents.some((d) => d.data.title === "Design doc" && d.data.content === "the plan"),
+    ).toBe(true);
+
+    // no parent → 400; two parents → 400; unknown parent → 404
+    expect((await api(url, "POST", "/v1/documents", { title: "Orphan" })).status).toBe(400);
+    const team = await ok(url, "POST", "/v1/teams", { key: "BRO", name: "Broomva" });
+    expect((team.team as { key: string }).key).toBe("BRO");
+    expect(
+      (await api(url, "POST", "/v1/documents", { title: "Two", project: "Kanon", team: "BRO" }))
+        .status,
+    ).toBe(400);
+    expect((await api(url, "POST", "/v1/documents", { title: "X", project: "Nope" })).status).toBe(
+      404,
+    );
+  });
+});
+
 describe("catalog", () => {
   test("returns the workspace + resolvable teams/states/projects/labels/actors", async () => {
     const { url } = boot();
