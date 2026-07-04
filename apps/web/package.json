@@ -1,0 +1,31 @@
+{
+  "name": "@kanon/web",
+  "version": "0.1.0",
+  "description": "Kanon human UI — list/board/detail/cmd-K over the SSE projection, in the Broomva design language",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev -p 3939",
+    "build": "next build",
+    "start": "next start -p 3939",
+    "check-types": "tsc --noEmit"
+  },
+  "dependencies": {
+    "lucide-react": "^1.23.0",
+    "next": "^16",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3"
+  },
+  "browserslist": [
+    "chrome >= 111",
+    "safari >= 16",
+    "firefox >= 110",
+    "edge >= 111"
+  ]
+}

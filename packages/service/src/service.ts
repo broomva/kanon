@@ -36,6 +36,7 @@ import {
   validateEvent,
 } from "@kanon/core";
 import {
+  type ActorRecord,
   type AgentActivityRecord,
   type AgentSessionRecord,
   allocateDisplayNumber,
@@ -48,16 +49,21 @@ import {
   getIssue,
   type IssueFilters,
   type IssueRecord,
+  type LabelRecord,
+  listActors,
   listAgentActivities,
   listAgentSessions,
   listComments,
   listIssues,
+  listLabels,
+  listMilestones,
   listModelEntities,
   listProjects,
   listRelations,
   listStates,
   listTeams,
   loadLog,
+  type MilestoneRecord,
   openProjection,
   type Projection,
   type ProjectRecord,
@@ -611,6 +617,33 @@ export class KanonService {
 
   listTeams(): TeamRecord[] {
     return listTeams(this.db);
+  }
+
+  /**
+   * The read-only bootstrap the web UI loads once to resolve the references
+   * carried on issues (stateId / labelIds / assigneeId / delegateId /
+   * projectId / milestoneId) into names, colours, and board columns. One
+   * workspace = one data repo, so this is inherently tenant-scoped: a Stimulus
+   * server can only ever return Stimulus rows.
+   */
+  catalog(): {
+    workspace: string;
+    teams: TeamRecord[];
+    states: StateRecord[];
+    projects: ProjectRecord[];
+    labels: LabelRecord[];
+    actors: ActorRecord[];
+    milestones: MilestoneRecord[];
+  } {
+    return {
+      workspace: this.workspace,
+      teams: listTeams(this.db),
+      states: listStates(this.db),
+      projects: listProjects(this.db),
+      labels: listLabels(this.db),
+      actors: listActors(this.db),
+      milestones: listMilestones(this.db),
+    };
   }
 
   createTeam(actor: EventActor, raw: unknown): { team: TeamRecord | null; states: StateRecord[] } {
