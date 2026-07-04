@@ -302,6 +302,7 @@ button {
     background var(--bv-dur-fast) var(--bv-ease-standard),
     border-color var(--bv-dur-fast) var(--bv-ease-standard),
     color var(--bv-dur-fast) var(--bv-ease-standard),
+    opacity var(--bv-dur-fast) var(--bv-ease-standard),
     transform var(--bv-dur-fast) var(--bv-ease-standard);
 }
 .k-btn:active:not(:disabled) {

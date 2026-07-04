@@ -55,19 +55,19 @@ export function ListSkeleton() {
 
 export function DetailSkeleton() {
   return (
-    <aside className="k-detail">
+    <aside className="k-detail" aria-hidden>
       <div className="k-detail-head">
         <div className="k-detail-crumbs">
           <Bar w={120} h={11} />
         </div>
-        <div className="k-skel-block" style={{ marginTop: 14 }} aria-hidden>
+        <div className="k-skel-block" style={{ marginTop: 14 }}>
           <Bar w="70%" h={20} />
           <Bar w="90%" h={12} />
           <Bar w="45%" h={12} />
         </div>
       </div>
       <div className="k-detail-body">
-        <div className="k-skel-block" aria-hidden>
+        <div className="k-skel-block">
           <Bar w="100%" h={12} />
           <Bar w="95%" h={12} />
           <Bar w="60%" h={12} />
