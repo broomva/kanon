@@ -211,10 +211,57 @@ function insertEntities(db: Database, model: Model, entities: Map<string, Entity
   }
 }
 
+/**
+ * Resolve an issue's labels from the OR-Set of `issue_label` edges unioned
+ * with any legacy whole-array `labelIds` field. Each edge id is deterministic
+ * per `(issueId, labelId)` (see `issueLabelId`), so a live edge attaches and a
+ * tombstoned edge detaches — which is how a label carried only in the legacy
+ * array gets removed (an unrelate on the deterministic id, with no prior
+ * relate, reads here as "removed"). BRO-1678.
+ */
+function resolveLabelIds(entity: Entity, edges: Map<string, boolean> | undefined): string[] {
+  const labels = new Set<string>();
+  const legacy = entity.fields.labelIds;
+  if (Array.isArray(legacy)) {
+    for (const labelId of legacy) {
+      if (typeof labelId === "string") labels.add(labelId);
+    }
+  }
+  if (edges !== undefined) {
+    for (const [labelId, deleted] of edges) {
+      if (deleted) labels.delete(labelId);
+      else labels.add(labelId);
+    }
+  }
+  return [...labels];
+}
+
+/** Group live/tombstoned `issue_label` edges by issue: issueId → labelId → deleted. */
+function indexLabelEdges(
+  edgeEntities: Map<string, Entity> | undefined,
+): Map<string, Map<string, boolean>> {
+  const byIssue = new Map<string, Map<string, boolean>>();
+  if (edgeEntities === undefined) return byIssue;
+  for (const edge of edgeEntities.values()) {
+    const issueId = edge.fields.issueId;
+    const labelId = edge.fields.labelId;
+    if (typeof issueId !== "string" || typeof labelId !== "string") continue;
+    let byLabel = byIssue.get(issueId);
+    if (byLabel === undefined) {
+      byLabel = new Map();
+      byIssue.set(issueId, byLabel);
+    }
+    // One entity per (issueId, labelId) by construction — deterministic id.
+    byLabel.set(labelId, edge.deleted);
+  }
+  return byIssue;
+}
+
 function insertIssues(
   db: Database,
   issues: Map<string, Entity>,
   teamKeys: Map<string, string>,
+  labelEdges: Map<string, Map<string, boolean>>,
 ): void {
   const spec = MODEL_TABLES.issue;
   if (spec === undefined) throw new Error("unreachable: issue table spec missing");
@@ -243,13 +290,8 @@ function insertIssues(
 
     insert.run(id, ...values, identifier, ...bookkeepingBindings(entity, rest));
 
-    const labelIds = entity.fields.labelIds;
-    if (Array.isArray(labelIds)) {
-      for (const labelId of labelIds) {
-        if (typeof labelId === "string") {
-          insertLabel.run(id, labelId);
-        }
-      }
+    for (const labelId of resolveLabelIds(entity, labelEdges.get(id))) {
+      insertLabel.run(id, labelId);
     }
   }
 }
@@ -282,9 +324,10 @@ export function openProjection(dataRepoDir: string, options: ProjectionOptions =
         }
       }
 
+      const labelEdges = indexLabelEdges(state.entities.get("issue_label"));
       for (const [model, entities] of state.entities) {
         if (model === "issue") {
-          insertIssues(db, entities, teamKeys);
+          insertIssues(db, entities, teamKeys, labelEdges);
         } else {
           insertEntities(db, model, entities);
         }

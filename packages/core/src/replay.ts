@@ -249,9 +249,11 @@ function touch(entity: Entity, event: KanonEvent): void {
  * (`appliedCount`/`appliedHash`); callers must not apply the same event
  * twice (`replay` enforces this via its contract).
  *
- * `relate` follows `create` semantics and `unrelate` follows `delete`
- * semantics — conventionally used for `issue_relation` entities carrying
- * `{ type, issueId, relatedIssueId }`.
+ * `relate` follows `create` semantics; `unrelate` tombstones like `delete`
+ * but also applies its identity fields first, so it is self-describing even
+ * with no prior `relate` in this replica (see the `unrelate` case). Edge
+ * entities carry `{ type, issueId, relatedIssueId }` (issue_relation) or
+ * `{ issueId, labelId }` (issue_label).
  */
 export function applyEvent(state: WorldState, event: KanonEvent): WorldState {
   const entity = getOrCreateEntity(state, event);
@@ -280,8 +282,21 @@ export function applyEvent(state: WorldState, event: KanonEvent): WorldState {
       }
       break;
     }
-    case "delete":
+    case "delete": {
+      if (lwwWins(state, fieldVersionKey(event.model, event.modelId, DELETED_FIELD), event.id)) {
+        entity.deleted = true;
+      }
+      break;
+    }
     case "unrelate": {
+      // unrelate is self-describing: it applies its identity fields (empty for
+      // issue_relation, {issueId,labelId} for issue_label) before tombstoning,
+      // so an unrelate with no prior relate in this replica still records
+      // which edge it removed. That is what lets a label carried only in a
+      // legacy whole-array `labelIds` field be removed by an unrelate on its
+      // deterministic edge id (BRO-1678). Empty data is a no-op — behaviour
+      // for issue_relation is unchanged.
+      applyFields(state, entity, event);
       if (lwwWins(state, fieldVersionKey(event.model, event.modelId, DELETED_FIELD), event.id)) {
         entity.deleted = true;
       }

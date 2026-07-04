@@ -10,6 +10,9 @@
   "dependencies": {
     "@kanon/core": "workspace:*"
   },
+  "devDependencies": {
+    "fast-check": "^4.5.0"
+  },
   "scripts": {
     "test": "bun test",
     "check-types": "tsc --noEmit"
