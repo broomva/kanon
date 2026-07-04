@@ -5,6 +5,7 @@ import type { CatalogIndex } from "../lib/catalog";
 import type { IssueRecord } from "../lib/types";
 import { BUCKETS, type Bucket, bucketOf } from "../lib/work-state";
 import { IssueCard } from "./IssueCard";
+import { ToneDot } from "./primitives";
 
 export interface BoardProps {
   issues: IssueRecord[];
@@ -60,6 +61,7 @@ export function Board({ issues, cat, liveIssueIds, selectedRef, onSelect, onMove
             }}
           >
             <div className="k-col-head">
+              <ToneDot tone={bucket.tone} />
               <span className="k-col-title">{bucket.label}</span>
               <span className="k-col-count">{list.length}</span>
             </div>
@@ -72,8 +74,13 @@ export function Board({ issues, cat, liveIssueIds, selectedRef, onSelect, onMove
                   cat={cat}
                   live={liveIssueIds.has(issue.id)}
                   selected={(issue.identifier ?? issue.id) === selectedRef}
+                  dragging={(issue.identifier ?? issue.id) === dragRef}
                   onSelect={onSelect}
                   onDragStart={setDragRef}
+                  onDragEnd={() => {
+                    setDragRef(null);
+                    setOverBucket(null);
+                  }}
                 />
               ))}
               {list.length === 0 ? <div className="k-col-empty">Nothing here</div> : null}

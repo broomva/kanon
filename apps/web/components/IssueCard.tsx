@@ -8,13 +8,24 @@ export interface IssueCardProps {
   cat: CatalogIndex;
   live: boolean;
   selected: boolean;
+  dragging?: boolean;
   onSelect: (ref: string) => void;
   onDragStart?: (ref: string) => void;
+  onDragEnd?: () => void;
 }
 
 // The work card. Matte at rest; when a live agent session runs on the issue it
 // is wrapped in the Undertow (a breathing halo, not a colored border).
-export function IssueCard({ issue, cat, live, selected, onSelect, onDragStart }: IssueCardProps) {
+export function IssueCard({
+  issue,
+  cat,
+  live,
+  selected,
+  dragging,
+  onSelect,
+  onDragStart,
+  onDragEnd,
+}: IssueCardProps) {
   const state = cat.state(issue.stateId);
   const bucket = bucketMeta(bucketOf(state?.stateType));
   const ref = issue.identifier ?? issue.id;
@@ -29,7 +40,7 @@ export function IssueCard({ issue, cat, live, selected, onSelect, onDragStart }:
   const card = (
     <button
       type="button"
-      className={`k-card${selected ? " is-selected" : ""}`}
+      className={`k-card${selected ? " is-selected" : ""}${dragging ? " is-dragging" : ""}`}
       onClick={() => onSelect(ref)}
       draggable={Boolean(onDragStart)}
       onDragStart={(e) => {
@@ -37,6 +48,7 @@ export function IssueCard({ issue, cat, live, selected, onSelect, onDragStart }:
         e.dataTransfer.effectAllowed = "move";
         onDragStart?.(ref);
       }}
+      onDragEnd={() => onDragEnd?.()}
     >
       <div className="k-card-top">
         <span className="k-card-ref">{ref}</span>

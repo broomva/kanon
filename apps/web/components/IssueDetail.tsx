@@ -9,6 +9,7 @@ import { glassComposerBlur } from "../lib/glass";
 import type { AgentActivityRecord, AgentSessionRecord, IssueDetail as Detail } from "../lib/types";
 import { bucketMeta, bucketOf, priorityMeta } from "../lib/work-state";
 import { Avatar, Badge, ToneDot } from "./primitives";
+import { DetailSkeleton } from "./Skeletons";
 
 const RAIL: { id: string; label: string }[] = [
   { id: "queued", label: "Queued" },
@@ -82,13 +83,7 @@ export function IssueDetail({
     );
   }
   if (!detail) {
-    return (
-      <aside className="k-detail">
-        <div className="k-detail-empty">
-          <span className="k-empty-sub">Loading…</span>
-        </div>
-      </aside>
-    );
+    return <DetailSkeleton />;
   }
 
   const { issue } = detail;
@@ -296,9 +291,7 @@ export function IssueDetail({
 
             <div className="k-receipt">
               <GitBranch size={13} />
-              <span>
-                {ref} · the log is the receipt — every change here is one attributed event
-              </span>
+              <span>{ref} · the log is the receipt: every change here is one attributed event</span>
             </div>
           </>
         ) : (

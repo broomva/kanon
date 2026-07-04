@@ -14,6 +14,7 @@ import { IssueDetail } from "./IssueDetail";
 import { IssueList } from "./IssueList";
 import { NewIssueDialog } from "./NewIssueDialog";
 import { Sidebar } from "./Sidebar";
+import { BoardSkeleton, ListSkeleton } from "./Skeletons";
 
 // The state that a drop lands on, per bucket (first matching state for the team).
 const DROP_TYPES: Record<Bucket, string[]> = {
@@ -223,7 +224,13 @@ export function KanonApp() {
               <span className="k-empty-title">Can&apos;t reach the workspace</span>
               <span className="k-empty-sub">{loadError}</span>
             </div>
-          ) : loaded && issues.length === 0 ? (
+          ) : !loaded ? (
+            view === "board" ? (
+              <BoardSkeleton />
+            ) : (
+              <ListSkeleton />
+            )
+          ) : issues.length === 0 ? (
             <div className="k-plane-empty">
               <span className="k-empty-title">No work yet</span>
               <span className="k-empty-sub">Press New, or ⌘K, to open the first one.</span>
