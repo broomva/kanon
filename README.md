@@ -44,15 +44,15 @@ segments + snapshots from day one, disposable caches, and a first-class rendezvo
   `assignee` (accountable human) and `delegate` (agent); agent sessions follow the
   thought / elicitation / action / response / error activity model.
 
-## Status: M2
+## Status: M4
 
 | Milestone | Scope | Status |
 |---|---|---|
 | M0 | Scaffold, event schema v1, `kanon init` / `kanon validate` | done |
 | M1 | Core merge/replay + SQLite projection + CLI lifecycle + Linear import | done |
 | M2 | Rendezvous server: REST v1, ID allocation, webhooks, event feed | done |
-| M3 | MCP parity (`linear-server` drop-in) + agent sessions/delegation | **here** (Phase 1: tool parity over stdio; Phase 2: agent sessions) |
-| M4 | Web UI (list/board/detail/cmd-K, SSE) | planned |
+| M3 | MCP parity (`linear-server` drop-in) + agent sessions/delegation | done |
+| M4 | Web UI (list/board/detail/cmd-K, SSE) — `apps/web`, Next.js 16 | done |
 | M5 | Initiatives/status updates/documents + migration tooling | planned |
 
 ## Quick start
@@ -122,6 +122,29 @@ KANON_DATA_DIR=~/kanon-data-myteam \
 KANON_API_KEYS="s3cret-token:carlos@example.com:human" \
 bun apps/server/src/index.ts
 ```
+
+### Auth + attribution model
+
+- **Domain endpoints bind to the key's principal.** `POST /v1/issues`,
+  `/v1/webhooks`, etc. stamp the event actor from the API key — a caller can't
+  forge who did what on those routes.
+- **`POST /v1/events` (ingest) trusts the event's `actor` verbatim.** This is
+  intentional: it's the client-replica CRDT path — offline clones ship
+  pre-built, already-attributed events, and the server unions them in. Any
+  valid key can therefore ingest an event attributed to any actor id. Ingest is
+  a peer-replication endpoint, not a user-facing write; treat a key that can
+  reach it as a trusted replica. (A strict "attribution mode" that rejects
+  ingest events whose `actor.id` ≠ the key principal is a future opt-in.)
+- **Webhook targets are SSRF-guarded.** `POST /v1/webhooks` refuses loopback /
+  link-local / private-range hosts (metadata `169.254.169.254`, `localhost`,
+  RFC-1918, CGNAT, IPv6 ULA/link-local) so a key holder can't make the server
+  POST to internal services. Set `KANON_WEBHOOK_ALLOW_PRIVATE=1` to allow
+  internal targets (tests, trusted single-tenant). DNS names that resolve to
+  private IPs (rebinding) are a documented residual — lock those down with a
+  network egress policy.
+- **SSE is bounded.** Each `/v1/stream` connection buffers at most 1000 events;
+  a stalled consumer drops the oldest and receives a one-shot `resync` frame,
+  after which it reconciles from `GET /v1/sync/events?after=<last-id>`.
 
 Full API table, tenancy/auth model, webhook signature verification, and
 Railway deploy notes: [`apps/server/README.md`](apps/server/README.md).

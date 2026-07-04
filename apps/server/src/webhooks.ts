@@ -16,7 +16,7 @@
  */
 
 import { createHmac } from "node:crypto";
-import type { KanonEvent } from "@kanon/core";
+import { type KanonEvent, ulid } from "@kanon/core";
 import type { KanonService } from "@kanon/service";
 
 const MAX_ATTEMPTS = 4; // 1 initial + 3 retries
@@ -89,7 +89,7 @@ export class WebhookDeliverer {
       if (!hook.resourceTypes.includes(event.model)) continue;
       const body = JSON.stringify(event);
       this.queue.push({
-        deliveryId: crypto.randomUUID(),
+        deliveryId: ulid(),
         webhookId: hook.id,
         url: hook.url,
         body,

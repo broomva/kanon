@@ -23,6 +23,10 @@ import type { ApiKeyPrincipal, ServerConfig } from "./config";
 
 export type AppEnv = { Variables: { actor: EventActor } };
 
+/** Max events buffered per SSE connection before the oldest are dropped and the
+ *  client is told to resync. Bounds memory growth on a stalled consumer. */
+const STREAM_QUEUE_CAP = 1000;
+
 function principalActor(principal: ApiKeyPrincipal, bootId: string, surface: Surface): EventActor {
   return {
     type: principal.actorType,
@@ -117,11 +121,20 @@ export function createApp(service: KanonService, config: ServerConfig): Hono<App
 
   app.get("/v1/stream", (c) =>
     streamSSE(c, async (stream) => {
+      // A stalled consumer (TCP backpressure) must not grow memory without
+      // bound. Cap the per-connection queue: on overflow we drop the OLDEST
+      // events and raise a `resync` flag, then tell the client once to
+      // reconcile from its last-seen id via GET /v1/sync/events?after=.
       const queue: KanonEvent[] = [];
       let open = true;
+      let resyncNeeded = false;
       let wake: (() => void) | undefined;
       const unsubscribe = service.bus.subscribe((event) => {
         queue.push(event);
+        if (queue.length > STREAM_QUEUE_CAP) {
+          queue.shift();
+          resyncNeeded = true;
+        }
         wake?.();
       });
       stream.onAbort(() => {
@@ -134,12 +147,21 @@ export function createApp(service: KanonService, config: ServerConfig): Hono<App
         data: JSON.stringify({ workspace: service.workspace, head: service.head() }),
       });
       while (open) {
+        if (resyncNeeded) {
+          resyncNeeded = false;
+          await stream.writeSSE({
+            event: "resync",
+            data: JSON.stringify({ reason: "queue-overflow", head: service.head() }),
+          });
+        }
         while (open) {
           const event = queue.shift();
           if (event === undefined) break;
           await stream.writeSSE({ id: event.id, data: JSON.stringify(event) });
+          if (resyncNeeded) break; // surface the resync frame before more data
         }
         if (!open) break;
+        if (queue.length > 0 || resyncNeeded) continue;
         await new Promise<void>((resolve) => {
           wake = resolve;
         });

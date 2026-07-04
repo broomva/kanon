@@ -140,4 +140,61 @@ describe("webhooks", () => {
     ).toBe(400);
     expect((await api(url, "DELETE", `/v1/webhooks/${id}`)).status).toBe(404);
   });
+
+  test("X-Kanon-Delivery is a ULID", async () => {
+    const { url } = boot();
+    const sink = receiver();
+    await ok(url, "POST", "/v1/webhooks", {
+      url: sink.url,
+      secret: "s",
+      resourceTypes: ["team"],
+    });
+    await ok(url, "POST", "/v1/teams", { key: "BRO", name: "Broomva" });
+    const delivery = await waitFor(() => sink.captured[0], 5000, "webhook delivery");
+    expect(delivery.delivery).toMatch(/^[0-9A-HJKMNP-TV-Z]{26}$/); // Crockford base32 ULID
+  });
+});
+
+describe("webhook SSRF guard", () => {
+  test("refuses loopback / link-local / private targets when the guard is on", async () => {
+    const { url } = boot({ allowPrivateWebhooks: "0" });
+    for (const target of [
+      "http://localhost:9999/hook",
+      "http://127.0.0.1/hook",
+      "http://169.254.169.254/latest/meta-data", // cloud metadata
+      "http://10.0.0.5/hook",
+      "http://192.168.1.1/hook",
+      "http://[::1]/hook",
+    ]) {
+      const res = await api(url, "POST", "/v1/webhooks", {
+        url: target,
+        secret: "s",
+        resourceTypes: ["team"],
+      });
+      expect(res.status).toBe(400);
+    }
+    // A public target is still accepted with the guard on.
+    expect(
+      (
+        await api(url, "POST", "/v1/webhooks", {
+          url: "https://hooks.example.com/x",
+          secret: "s",
+          resourceTypes: ["team"],
+        })
+      ).status,
+    ).toBe(201);
+  });
+
+  test("allows a localhost receiver when the operator opts in", async () => {
+    const { url } = boot(); // test default: allowPrivateWebhooks = "1"
+    expect(
+      (
+        await api(url, "POST", "/v1/webhooks", {
+          url: "http://localhost:9999/hook",
+          secret: "s",
+          resourceTypes: ["team"],
+        })
+      ).status,
+    ).toBe(201);
+  });
 });
