@@ -1,0 +1,10 @@
+/* The Broomva design tokens (colors, type, spacing, glass, motion, base), then
+   the kanon app surface. Order matters — tokens define the vars everything
+   else reads. */
+@import "../styles/ds/colors.css";
+@import "../styles/ds/typography.css";
+@import "../styles/ds/spacing.css";
+@import "../styles/ds/glass.css";
+@import "../styles/ds/motion.css";
+@import "../styles/ds/base.css";
+@import "./kanon.css";

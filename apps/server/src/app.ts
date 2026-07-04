@@ -198,6 +198,9 @@ export function createApp(service: KanonService, config: ServerConfig): Hono<App
     ),
   );
 
+  // -- catalog (web-UI bootstrap: resolve stateId/labelIds/actor refs) ---------
+  app.get("/v1/catalog", (c) => c.json(service.catalog()));
+
   // -- teams + projects --------------------------------------------------------
   app.get("/v1/teams", (c) => c.json({ teams: service.listTeams() }));
 

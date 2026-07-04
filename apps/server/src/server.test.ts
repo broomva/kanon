@@ -245,6 +245,52 @@ describe("issues", () => {
 });
 
 // ---------------------------------------------------------------------------
+// catalog (web-UI bootstrap)
+// ---------------------------------------------------------------------------
+
+describe("catalog", () => {
+  test("returns the workspace + resolvable teams/states/projects/labels/actors", async () => {
+    const { url } = boot();
+    await ok(url, "POST", "/v1/teams", { key: "BRO", name: "Broomva" });
+    await ok(url, "POST", "/v1/projects", { name: "Kanon" });
+    await ok(url, "POST", "/v1/issues", {
+      team: "BRO",
+      title: "Ship the UI",
+      delegate: "claude",
+      labels: ["infra"],
+    });
+
+    const catalog = await ok(url, "GET", "/v1/catalog");
+    expect(catalog.workspace).toBe("test");
+
+    const teams = catalog.teams as { key: string }[];
+    expect(teams.some((t) => t.key === "BRO")).toBe(true);
+
+    // Team create seeds the 7 default workflow states — the board columns.
+    const states = catalog.states as { stateType: string }[];
+    expect(states.length).toBeGreaterThanOrEqual(7);
+    expect(states.some((s) => s.stateType === "started")).toBe(true);
+
+    const projects = catalog.projects as { name: string }[];
+    expect(projects.some((p) => p.name === "Kanon")).toBe(true);
+
+    // The delegate + label minted entities the UI resolves by id.
+    const actors = catalog.actors as { name: string | null }[];
+    expect(actors.some((a) => a.name === "claude")).toBe(true);
+    const labels = catalog.labels as { name: string | null }[];
+    expect(labels.some((l) => l.name === "infra")).toBe(true);
+  });
+
+  test("needs auth — a foreign key learns nothing", async () => {
+    const { url } = boot();
+    const denied = await fetch(`${url}/v1/catalog`, {
+      headers: { authorization: "Bearer some-other-workspaces-key" },
+    });
+    expect(denied.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // ready + blocking
 // ---------------------------------------------------------------------------
 
