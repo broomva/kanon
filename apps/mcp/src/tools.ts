@@ -9,8 +9,8 @@
  * Kanon deliberately doesn't model some Linear concepts (releases, first-class
  * cycles); those args are accepted for call-site compatibility and either
  * ignored or answered with an explicit "not in Kanon v1" note rather than a
- * hard failure. Initiatives ARE modelled (they live in `other_entities`; see
- * the initiative handlers below).
+ * hard failure. Initiatives and status updates ARE modelled (they live in
+ * `other_entities`; see the handlers below).
  */
 
 import type { EventActor } from "@kanon/core";
@@ -25,6 +25,7 @@ import {
   listStates,
   resolveInitiatives,
   resolveProjects,
+  resolveStatusUpdates,
   resolveTeams,
 } from "@kanon/store";
 import {
@@ -38,6 +39,8 @@ import {
   formatProject,
   formatProjectList,
   formatStateList,
+  formatStatusUpdate,
+  formatStatusUpdateList,
   formatTeam,
   formatTeamList,
   formatUserList,
@@ -291,6 +294,39 @@ export const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
           );
     if (initiative === null) throw new ServiceError(500, "initiative save returned no record");
     return formatInitiative(initiative);
+  },
+
+  get_status_updates(args, ctx) {
+    const id = str(args, "id");
+    if (id !== undefined) {
+      const update = resolveStatusUpdates(ctx.service.db, id)[0];
+      if (update === undefined) throw new ServiceError(404, `no status update matching "${id}"`);
+      return formatStatusUpdate(update);
+    }
+    const updates = ctx.service.listStatusUpdates({
+      type: requireStr(args, "type"),
+      project: str(args, "project"),
+      initiative: str(args, "initiative"),
+      authorId: resolveMe(str(args, "user"), ctx.actor) ?? undefined,
+    });
+    return formatStatusUpdateList(updates);
+  },
+
+  save_status_update(args, ctx) {
+    const type = requireStr(args, "type");
+    const id = str(args, "id");
+    const fields = clean({ health: str(args, "health"), body: str(args, "body") });
+    const update =
+      id === undefined
+        ? ctx.service.createStatusUpdate(ctx.actor, {
+            ...fields,
+            type,
+            project: str(args, "project"),
+            initiative: str(args, "initiative"),
+          })
+        : ctx.service.updateStatusUpdate(ctx.actor, id, fields);
+    if (update === null) throw new ServiceError(500, "status update save returned no record");
+    return formatStatusUpdate(update);
   },
 
   list_comments(args, ctx) {

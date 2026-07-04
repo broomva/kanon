@@ -267,6 +267,36 @@ describe("initiatives", () => {
   });
 });
 
+describe("status updates", () => {
+  test("POST creates a status update on a project; GET lists it (health rides the overflow)", async () => {
+    const { url } = boot();
+    await ok(url, "POST", "/v1/projects", { name: "Kanon", description: "tracker" });
+
+    const created = await ok(url, "POST", "/v1/status-updates", {
+      type: "project",
+      project: "Kanon",
+      health: "onTrack",
+      body: "shipping M5b",
+    });
+    const statusUpdate = created.statusUpdate as { id: string; data: Record<string, unknown> };
+    expect(statusUpdate.id).toHaveLength(26);
+    expect(statusUpdate.data.health).toBe("onTrack");
+
+    const list = await ok(url, "GET", "/v1/status-updates");
+    const updates = list.statusUpdates as { id: string; data: Record<string, unknown> }[];
+    expect(updates.some((u) => u.data.type === "project" && u.data.body === "shipping M5b")).toBe(
+      true,
+    );
+
+    // unknown parent → 404
+    const missing = await api(url, "POST", "/v1/status-updates", {
+      type: "project",
+      project: "Nope",
+    });
+    expect(missing.status).toBe(404);
+  });
+});
+
 describe("catalog", () => {
   test("returns the workspace + resolvable teams/states/projects/labels/actors", async () => {
     const { url } = boot();

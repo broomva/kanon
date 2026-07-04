@@ -81,6 +81,17 @@ export function resolveInitiatives(db: Database, ref: string): BaseRecord[] {
   return all.filter((rec) => String(rec.data.name ?? "").toLowerCase() === lower);
 }
 
+/**
+ * Status updates live in `other_entities` (no dedicated table — low volume; the
+ * only filtering, by type/parent/author, the service does over parsed `data`).
+ * They carry no unique name, so resolution is ULID-only — a single record or
+ * none. Mirrors the initiative/cycle overflow pattern.
+ */
+export function resolveStatusUpdates(db: Database, ref: string): BaseRecord[] {
+  if (!ULID_PATTERN.test(ref)) return [];
+  return listModelEntities(db, "status_update").filter((rec) => rec.id === ref);
+}
+
 // ---------------------------------------------------------------------------
 // Teams
 // ---------------------------------------------------------------------------

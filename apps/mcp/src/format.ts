@@ -181,6 +181,31 @@ export function formatInitiative(initiative: BaseRecord): string {
   return lines.join("\n");
 }
 
+// Status updates also live in other_entities — health/body/parent ride `data`.
+export function formatStatusUpdateList(updates: BaseRecord[]): string {
+  if (updates.length === 0) return "_No status updates._";
+  return `## Status updates (${updates.length})\n\n${updates
+    .map((u) => {
+      const parent = String(u.data.projectId ?? u.data.initiativeId ?? "—");
+      return `- **${String(u.data.health ?? "—")}** — ${String(u.data.type ?? "—")} \`${parent}\` \`${u.id}\``;
+    })
+    .join("\n")}`;
+}
+export function formatStatusUpdate(update: BaseRecord): string {
+  const d = update.data;
+  const lines = [
+    "# Status update",
+    `- **ID**: ${update.id}`,
+    `- **Type**: ${String(d.type ?? "—")}`,
+  ];
+  const parent = d.projectId ?? d.initiativeId;
+  if (parent != null) lines.push(`- **Parent**: ${String(parent)}`);
+  if (d.health != null) lines.push(`- **Health**: ${String(d.health)}`);
+  if (d.authorId != null) lines.push(`- **Author**: ${String(d.authorId)}`);
+  if (typeof d.body === "string" && d.body.length > 0) lines.push("", d.body);
+  return lines.join("\n");
+}
+
 export function formatStateList(states: StateRecord[]): string {
   if (states.length === 0) return "_No statuses._";
   return `## Statuses (${states.length})\n\n${states

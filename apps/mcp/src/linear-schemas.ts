@@ -11,7 +11,7 @@
  * Kanon does not model every Linear concept (releases, cycles as
  * first-class); those args are accepted in the schema for call-site
  * compatibility and ignored or surfaced as unsupported by the handler.
- * Initiatives ARE modelled (list/get/save; they live in other_entities).
+ * Initiatives and status updates ARE modelled (they live in other_entities).
  */
 
 export interface ToolSchema {
@@ -275,6 +275,73 @@ export const LINEAR_TOOL_SCHEMAS: Record<string, ToolSchema> = {
           type: "array",
           items: { type: "string" },
           description: "Parent initiative names or IDs to add. Appended to existing parents",
+        },
+      },
+    },
+  },
+  get_status_updates: {
+    description:
+      "List or get project/initiative status updates. Pass `id` to get a specific update, or filter to list.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type"],
+      properties: {
+        type: {
+          type: "string",
+          enum: ["project", "initiative"],
+          description: "Type of status update",
+        },
+        id: str("Status update ID - if provided, returns this specific update"),
+        project: str("Project name, ID, or slug"),
+        initiative: str("Initiative name or ID"),
+        user: str('User ID, name, email, or "me"'),
+        createdAt: str("Created after: ISO-8601 date/duration (e.g., -P1D)"),
+        updatedAt: str("Updated after: ISO-8601 date/duration (e.g., -P1D)"),
+        cursor: str("Next page cursor"),
+        includeArchived: { type: "boolean", default: false, description: "Include archived items" },
+        limit: {
+          type: "number",
+          default: 50,
+          maximum: 250,
+          description: "Max results (default 50, max 250)",
+        },
+        orderBy: {
+          type: "string",
+          default: "updatedAt",
+          enum: ["createdAt", "updatedAt"],
+          description: "Sort: createdAt | updatedAt",
+        },
+      },
+    },
+  },
+  save_status_update: {
+    description:
+      "Create or update a project/initiative status update. Omit `id` to create, provide `id` to update.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type"],
+      properties: {
+        type: {
+          type: "string",
+          enum: ["project", "initiative"],
+          description: "Type of status update",
+        },
+        id: str("Status update ID - if provided, updates this existing update"),
+        project: str("Project name, ID, or slug"),
+        initiative: str("Initiative name or ID"),
+        health: {
+          type: "string",
+          enum: ["onTrack", "atRisk", "offTrack"],
+          description: "onTrack | atRisk | offTrack",
+        },
+        body: str(
+          "Content as Markdown. Do not escape the string — use literal newlines and special characters, not escape sequences. To mention a user, use @displayName (e.g., @johndoe)",
+        ),
+        isDiffHidden: {
+          type: "boolean",
+          description: "Deprecated. Hide diff with previous update (create only)",
         },
       },
     },

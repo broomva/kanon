@@ -187,6 +187,55 @@ describe("kanon MCP server", () => {
     expect(dup.isError).toBe(true);
   });
 
+  test("save_status_update create + update; get single + list; parent required", async () => {
+    const { client } = await boot();
+    await call(client, "save_project", { name: "Kanon", description: "tracker" });
+
+    const created = await call(client, "save_status_update", {
+      type: "project",
+      project: "Kanon",
+      health: "onTrack",
+      body: "shipping M5b",
+    });
+    expect(created.isError).toBeFalsy();
+    const id = text(created).match(/\*\*ID\*\*: ([0-9A-HJKMNP-TV-Z]{26})/)?.[1];
+    expect(id).toBeDefined();
+
+    const list = text(await call(client, "get_status_updates", { type: "project" }));
+    expect(list).toContain("onTrack");
+    expect(list).toContain("Status updates (1)");
+
+    const got = text(await call(client, "get_status_updates", { type: "project", id }));
+    expect(got).toContain("shipping M5b");
+    expect(got).toContain("onTrack");
+
+    const updated = await call(client, "save_status_update", {
+      type: "project",
+      id,
+      health: "atRisk",
+    });
+    expect(updated.isError).toBeFalsy();
+    expect(text(updated)).toContain("atRisk");
+    // Health-only update is field-level LWW — the untouched body must survive.
+    expect(text(updated)).toContain("shipping M5b");
+
+    // filtered by a project with no updates → empty
+    const bump = await call(client, "get_status_updates", { type: "project", project: "Nope" });
+    expect(text(bump)).toContain("_No status updates._");
+
+    // create without a parent → error; bad health → error
+    expect((await call(client, "save_status_update", { type: "project" })).isError).toBe(true);
+    expect(
+      (
+        await call(client, "save_status_update", {
+          type: "project",
+          project: "Kanon",
+          health: "bogus",
+        })
+      ).isError,
+    ).toBe(true);
+  });
+
   test("unknown issue → isError, not a protocol crash", async () => {
     const { client } = await boot();
     const result = await call(client, "get_issue", { id: "BRO-999" });
