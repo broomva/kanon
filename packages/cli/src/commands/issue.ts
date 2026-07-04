@@ -10,7 +10,7 @@
  */
 
 import type { Database } from "bun:sqlite";
-import { ulid } from "@kanon/core";
+import { issueLabelId, ulid } from "@kanon/core";
 import {
   findRelation,
   getIssue,
@@ -217,6 +217,15 @@ export function issueCreate(argv: string[]): void {
   ];
 
   const issueId = ulid();
+  // Labels are OR-Set edges, not a whole-array field (BRO-1678): attach each as
+  // an issue_label relate edge keyed by its deterministic (issue,label) id, so
+  // offline clones that add different labels union instead of clobbering.
+  const labelEdges: EventInput[] = labelIds.map((labelId) => ({
+    op: "relate",
+    model: "issue_label",
+    modelId: issueLabelId(issueId, labelId),
+    data: { issueId, labelId },
+  }));
   const { number } = allocateAndAppend(ctx, team.id, teamKey, (allocated) => [
     ...mints,
     {
@@ -236,9 +245,9 @@ export function issueCreate(argv: string[]): void {
         parentId,
         projectId: project?.id,
         milestoneId: milestone?.id,
-        labelIds: labelIds.length > 0 ? labelIds : undefined,
       }),
     },
+    ...labelEdges,
   ]);
 
   const identifier = `${teamKey}-${number}`;
@@ -446,10 +455,11 @@ export function issueUpdate(argv: string[]): void {
   const assigneeFlag = flagString(flags, "assignee");
   const delegateFlag = flagString(flags, "delegate");
 
-  let labelIds: string[] | undefined;
   const addLabels = flagStrings(flags, "add-label");
   const removeLabels = flagStrings(flags, "remove-label");
-  if (addLabels.length > 0 || removeLabels.length > 0) {
+  const labelsRequested = addLabels.length > 0 || removeLabels.length > 0;
+  const labelEdges: EventInput[] = [];
+  if (labelsRequested) {
     const next = new Set(issue.labelIds);
     const pendingLabels = new Map<string, string>();
     for (const labelRef of addLabels) {
@@ -461,7 +471,31 @@ export function issueUpdate(argv: string[]): void {
         throw new CliError(`${issue.identifier ?? issue.id} does not carry label "${labelRef}"`);
       }
     }
-    labelIds = [...next].sort();
+    // Emit only the DELTA as OR-Set edges (BRO-1678): relate per newly attached
+    // label, unrelate per removed one, keyed by the deterministic (issue,label)
+    // id — offline clones adding different labels union, and an unrelate
+    // removes a label carried only in a legacy whole-array field too.
+    const current = new Set(issue.labelIds);
+    for (const labelId of next) {
+      if (!current.has(labelId)) {
+        labelEdges.push({
+          op: "relate",
+          model: "issue_label",
+          modelId: issueLabelId(issue.id, labelId),
+          data: { issueId: issue.id, labelId },
+        });
+      }
+    }
+    for (const labelId of current) {
+      if (!next.has(labelId)) {
+        labelEdges.push({
+          op: "unrelate",
+          model: "issue_label",
+          modelId: issueLabelId(issue.id, labelId),
+          data: { issueId: issue.id, labelId },
+        });
+      }
+    }
   }
 
   const data = compact({
@@ -473,16 +507,23 @@ export function issueUpdate(argv: string[]): void {
     estimate: flagNumber(flags, "estimate"),
     assigneeId: assigneeFlag === undefined ? undefined : requireActor(db, assigneeFlag).id,
     delegateId: delegateFlag === undefined ? undefined : requireActor(db, delegateFlag).id,
-    labelIds,
   });
-  if (Object.keys(data).length === 0) {
+  const issueUpdate: EventInput[] =
+    Object.keys(data).length > 0 ? [{ op: "update", model: "issue", modelId: issue.id, data }] : [];
+  const inputs = [...mints, ...issueUpdate, ...labelEdges];
+  if (inputs.length === 0 && !labelsRequested) {
     throw new CliError("issue update requires at least one field flag");
   }
 
-  writeEvents(ctx, [...mints, { op: "update", model: "issue", modelId: issue.id, data }]);
+  const changed = [...Object.keys(data), ...(labelEdges.length > 0 ? ["labels"] : [])];
+  if (inputs.length > 0) {
+    writeEvents(ctx, inputs);
+  }
   const updated = getIssue(db, issue.id);
   emit(flagBool(flags, "json"), updated, () => {
-    console.log(`updated ${issue.identifier ?? issue.id}: ${Object.keys(data).join(", ")}`);
+    console.log(
+      `updated ${issue.identifier ?? issue.id}: ${changed.length > 0 ? changed.join(", ") : "no change"}`,
+    );
   });
   ctx.projection.close();
 }

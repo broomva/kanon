@@ -26,6 +26,7 @@ import {
   type AgentSessionState,
   createEvent,
   type EventActor,
+  issueLabelId,
   type KanonEvent,
   MODELS,
   type Model,
@@ -929,6 +930,14 @@ export class KanonService {
     ];
 
     const issueId = ulid();
+    // Labels are OR-Set edges, not a whole-array field (BRO-1678): attach each
+    // as an issue_label relate edge keyed by its deterministic (issue,label) id.
+    const labelEdges: EventInput[] = labelIds.map((labelId) => ({
+      op: "relate",
+      model: "issue_label",
+      modelId: issueLabelId(issueId, labelId),
+      data: { issueId, labelId },
+    }));
     const { number } = this.allocateAndAppend(
       actor,
       team.id,
@@ -952,9 +961,9 @@ export class KanonService {
             parentId,
             projectId: project?.id,
             milestoneId,
-            labelIds: labelIds.length > 0 ? labelIds : undefined,
           }),
         },
+        ...labelEdges,
       ],
       `kanon issue create ${teamKey}`,
     );
@@ -1020,11 +1029,13 @@ export class KanonService {
       }
     }
 
-    let labelIds: string[] | undefined;
     const replaceLabels = optionalStringArray(body, "labels");
     const addLabels = optionalStringArray(body, "addLabels") ?? [];
     const removeLabels = optionalStringArray(body, "removeLabels") ?? [];
-    if (replaceLabels !== undefined || addLabels.length > 0 || removeLabels.length > 0) {
+    const labelsRequested =
+      replaceLabels !== undefined || addLabels.length > 0 || removeLabels.length > 0;
+    const labelEdges: EventInput[] = [];
+    if (labelsRequested) {
       const pending = new Map<string, string>();
       const next = new Set(
         replaceLabels === undefined
@@ -1046,7 +1057,32 @@ export class KanonService {
           );
         }
       }
-      labelIds = [...next].sort();
+      // Emit only the DELTA as OR-Set edges (BRO-1678): a relate per newly
+      // attached label, an unrelate per removed one, each keyed by the
+      // deterministic (issue,label) id. Concurrent attaches of different
+      // labels union instead of clobbering a shared array, and an unrelate
+      // removes a label carried only in a legacy whole-array field too.
+      const current = new Set(issue.labelIds);
+      for (const labelId of next) {
+        if (!current.has(labelId)) {
+          labelEdges.push({
+            op: "relate",
+            model: "issue_label",
+            modelId: issueLabelId(issue.id, labelId),
+            data: { issueId: issue.id, labelId },
+          });
+        }
+      }
+      for (const labelId of current) {
+        if (!next.has(labelId)) {
+          labelEdges.push({
+            op: "unrelate",
+            model: "issue_label",
+            modelId: issueLabelId(issue.id, labelId),
+            data: { issueId: issue.id, labelId },
+          });
+        }
+      }
     }
 
     const data = compact({
@@ -1060,16 +1096,21 @@ export class KanonService {
       projectId,
       parentId,
       milestoneId,
-      labelIds,
     });
-    if (Object.keys(data).length === 0) {
-      throw new ServiceError(400, "update requires at least one field");
+    const issueUpdate: EventInput[] =
+      Object.keys(data).length > 0
+        ? [{ op: "update", model: "issue", modelId: issue.id, data }]
+        : [];
+    const inputs = [...mints, ...issueUpdate, ...labelEdges];
+    if (inputs.length === 0) {
+      // Nothing to write. A requested label op that netted no change is an
+      // idempotent no-op; a request with no fields at all is an error.
+      if (!labelsRequested) {
+        throw new ServiceError(400, "update requires at least one field");
+      }
+      return getIssue(this.db, issue.id) ?? null;
     }
-    this.appendAsActor(
-      actor,
-      [...mints, { op: "update", model: "issue", modelId: issue.id, data }],
-      `kanon issue update ${issue.identifier ?? issue.id}`,
-    );
+    this.appendAsActor(actor, inputs, `kanon issue update ${issue.identifier ?? issue.id}`);
     return getIssue(this.db, issue.id) ?? null;
   }
 

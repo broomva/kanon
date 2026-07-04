@@ -16,7 +16,9 @@
 import type { Model } from "@kanon/core";
 
 /** Bump on any DDL/mapping change — forces a rebuild of existing caches. */
-export const PROJECTION_SCHEMA_VERSION = 1;
+// v2: issue_labels is derived from issue_label edge entities (OR-Set) unioned
+// with the legacy whole-array labelIds field, not the array alone (BRO-1678).
+export const PROJECTION_SCHEMA_VERSION = 2;
 
 export type ColumnKind = "text" | "number";
 

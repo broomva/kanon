@@ -7,6 +7,8 @@
  * in schema/event.schema.json; this module is its TypeScript implementation.
  */
 
+import { fnv1a64 } from "./stable";
+
 export const SCHEMA_VERSION = 1 as const;
 
 export const ACTOR_TYPES = ["human", "agent", "app", "system"] as const;
@@ -34,6 +36,7 @@ export const MODELS = [
   "issue",
   "label",
   "issue_relation",
+  "issue_label",
   "project",
   "milestone",
   "initiative",
@@ -176,6 +179,37 @@ export function ulid(now: number = Date.now()): string {
   }
   const random = lastUlidRandom.map((d) => ULID_ENCODING[d]).join("");
   return encodeTime(now) + random;
+}
+
+/**
+ * Deterministic edge id for a label attachment (the `issue_label` model).
+ *
+ * A label is SET membership, so its CRDT is an LWW-element-set keyed by
+ * `(issueId, labelId)`: every add/remove of the *same* pair must land on ONE
+ * entity so the highest event id wins (per-entity LWW), and two replicas that
+ * independently materialize the same label must produce the *same* entity so
+ * it dedupes. A random ULID per attach would give add-wins only and could
+ * never remove a label that a legacy issue carries as a whole-array field —
+ * an `unrelate` on this deterministic id tombstones the pair whether or not a
+ * matching `relate` was ever seen, and the projection reads it as removed.
+ *
+ * The id is 128 bits of FNV-1a (two folds) rendered as 26 Crockford-base32
+ * chars, so it is ULID-shaped (`ULID_PATTERN`) and flows through every
+ * modelId path unchanged. It is NOT time-ordered — nothing keys ordering on
+ * modelId (merge/replay order on the event id, a real ULID); modelId is only
+ * an entity key.
+ */
+export function issueLabelId(issueId: string, labelId: string): string {
+  const key = `${issueId} ${labelId}`;
+  const hi = BigInt(`0x${fnv1a64(key)}`);
+  const lo = BigInt(`0x${fnv1a64(`kanon:issue_label:${key}`)}`);
+  let n = (hi << 64n) | lo;
+  let out = "";
+  for (let i = 0; i < 26; i++) {
+    out = ULID_ENCODING[Number(n & 31n)] + out;
+    n >>= 5n;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
