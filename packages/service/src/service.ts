@@ -1245,7 +1245,12 @@ export class KanonService {
     return first;
   }
 
-  /** The stored filter mirrors the `list_issues` args an agent re-runs it with. */
+  /**
+   * The stored filter mirrors the `list_issues` args an agent re-runs it with.
+   * Fields are overwrite-only (`optionalString`, not tri-state): an update can
+   * change a criterion but not null it back to unset — dropping a filter is a
+   * delete-and-recreate in v1, deliberately, to keep create/update symmetric.
+   */
   private savedViewFilter(body: Record<string, unknown>): Record<string, unknown> {
     return {
       team: optionalString(body, "team"),
