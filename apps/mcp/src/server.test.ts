@@ -530,3 +530,102 @@ describe("agent-session platform (M3 Phase 2)", () => {
     expect(text(missing)).toContain("no agent session");
   });
 });
+
+describe("MCP parity expansion (BRO-1695)", () => {
+  const ULID = /`([0-9A-HJKMNP-TV-Z]{26})`/;
+
+  test("milestones: create under a project → get → list → update", async () => {
+    const { client } = await boot();
+    await call(client, "save_project", { name: "Alpha" });
+    const created = await call(client, "save_milestone", {
+      project: "Alpha",
+      name: "v1",
+      targetDate: "2026-09-01",
+      description: "first cut",
+    });
+    expect(created.isError).toBeFalsy();
+    expect(text(created)).toContain("v1");
+    expect(text(await call(client, "list_milestones", { project: "Alpha" }))).toContain("v1");
+    expect(text(await call(client, "get_milestone", { project: "Alpha", query: "v1" }))).toContain(
+      "target 2026-09-01",
+    );
+    const renamed = await call(client, "save_milestone", {
+      project: "Alpha",
+      id: "v1",
+      name: "v1.0",
+    });
+    expect(renamed.isError).toBeFalsy();
+    expect(text(renamed)).toContain("v1.0");
+  });
+
+  test("create_issue_label mints a label; duplicate in scope is rejected", async () => {
+    const { client } = await boot();
+    const created = await call(client, "create_issue_label", {
+      name: "bug",
+      color: "#ff0000",
+      teamId: "BRO",
+    });
+    expect(created.isError).toBeFalsy();
+    expect(text(created)).toContain("bug");
+    expect(text(await call(client, "list_issue_labels", {}))).toContain("bug");
+    const dup = await call(client, "create_issue_label", { name: "bug", teamId: "BRO" });
+    expect(dup.isError).toBe(true);
+  });
+
+  test("get_user resolves a minted actor; get_issue_status resolves a workflow state", async () => {
+    const { client } = await boot();
+    await call(client, "save_issue", { team: "BRO", title: "x" });
+    await call(client, "save_comment", { issueId: "BRO-1", body: "hi" });
+    const user = await call(client, "get_user", { query: "claude@example.com" });
+    expect(user.isError).toBeFalsy();
+    expect(text(user)).toContain("claude@example.com");
+
+    const status = await call(client, "get_issue_status", {
+      team: "BRO",
+      id: "Todo",
+      name: "Todo",
+    });
+    expect(status.isError).toBeFalsy();
+    expect(text(status)).toContain("Todo");
+  });
+
+  test("delete_comment tombstones a comment", async () => {
+    const { client } = await boot();
+    await call(client, "save_issue", { team: "BRO", title: "x" });
+    const commented = await call(client, "save_comment", { issueId: "BRO-1", body: "temp" });
+    const id = text(commented).match(ULID)?.[1];
+    expect(id).toBeDefined();
+    const deleted = await call(client, "delete_comment", { id });
+    expect(deleted.isError).toBeFalsy();
+    expect(text(deleted)).toContain("Deleted comment");
+    expect(text(await call(client, "list_comments", { issueId: "BRO-1" }))).not.toContain("temp");
+  });
+
+  test("delete_status_update tombstones a project status update", async () => {
+    const { client } = await boot();
+    await call(client, "save_project", { name: "Alpha" });
+    const su = await call(client, "save_status_update", {
+      type: "project",
+      project: "Alpha",
+      health: "onTrack",
+      body: "green",
+    });
+    // formatStatusUpdate prints "- **ID**: <ulid>" (unquoted), unlike the comment line.
+    const id = text(su).match(/\*\*ID\*\*:\s*([0-9A-HJKMNP-TV-Z]{26})/)?.[1];
+    expect(id).toBeDefined();
+    const deleted = await call(client, "delete_status_update", { type: "project", id });
+    expect(deleted.isError).toBeFalsy();
+    expect(text(deleted)).toContain("Deleted status update");
+  });
+
+  test("list_ready_issues (Kanon-native) excludes an issue blocked by an open issue", async () => {
+    const { client, service } = await boot();
+    const blocker = service.createIssue(ACTOR, { team: "BRO", title: "Blocker" });
+    service.createIssue(ACTOR, { team: "BRO", title: "Blocked" });
+    service.relate(ACTOR, blocker.id, { type: "blocks", target: "BRO-2" });
+    const ready = await call(client, "list_ready_issues", { team: "BRO" });
+    expect(ready.isError).toBeFalsy();
+    expect(text(ready)).toContain("Blocker");
+    expect(text(ready)).not.toContain("Blocked");
+  });
+});

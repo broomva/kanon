@@ -16,6 +16,7 @@ import {
   type IssueRecord,
   type LabelRecord,
   listStates,
+  type MilestoneRecord,
   type ProjectRecord,
   type RelationRecord,
   resolveActors,
@@ -327,9 +328,23 @@ export function formatUserList(users: UserLine[]): string {
     .join("\n")}`;
 }
 
+export function formatMilestoneList(milestones: MilestoneRecord[]): string {
+  if (milestones.length === 0) return "_No milestones._";
+  return `## Milestones (${milestones.length})\n\n${milestones
+    .map(
+      (m) => `- **${m.name ?? "?"}**${m.targetDate ? ` — target ${m.targetDate}` : ""} \`${m.id}\``,
+    )
+    .join("\n")}`;
+}
+
 /** Confirmation line after a write. */
 export function formatSaved(kind: string, ref: string, id: string): string {
   return `Saved ${kind} **${ref}** (\`${id}\`).`;
+}
+
+/** Confirmation line after a delete/tombstone. */
+export function formatDeleted(kind: string, id: string): string {
+  return `Deleted ${kind} (\`${id}\`).`;
 }
 
 /** One-line session summary: issue, agent, state. */

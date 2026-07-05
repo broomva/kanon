@@ -147,6 +147,114 @@ export const LINEAR_TOOL_SCHEMAS: Record<string, ToolSchema> = {
       properties: { query: str("Team name or ID") },
     },
   },
+  get_user: {
+    description: "Retrieve details of a specific Linear user",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["query"],
+      properties: { query: str('User ID, name, email, or "me"') },
+    },
+  },
+  get_issue_status: {
+    description: "Retrieve detailed information about an issue status in Linear by name or ID",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id", "name", "team"],
+      properties: {
+        id: str("Status ID"),
+        name: str("Status name"),
+        team: str("Team name or ID"),
+      },
+    },
+  },
+  list_milestones: {
+    description: "List all milestones in a Linear project",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["project"],
+      properties: { project: str("Project name, ID, or slug") },
+    },
+  },
+  get_milestone: {
+    description: "Retrieve details of a specific milestone by ID or name",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["project", "query"],
+      properties: {
+        project: str("Project name, ID, or slug"),
+        query: str("Milestone name or ID"),
+      },
+    },
+  },
+  save_milestone: {
+    description:
+      "Create or update a milestone in a Linear project. If `id` is provided, updates the existing milestone; otherwise creates a new one. When creating, `name` is required.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["project"],
+      properties: {
+        project: str("Project name, ID, or slug"),
+        id: str("Milestone name or ID"),
+        name: str("Milestone name (required when creating)"),
+        description: str("Milestone description"),
+        targetDate: {
+          anyOf: [{ type: "string" }, { type: "null" }],
+          description: "Target completion date (ISO format, null to remove)",
+        },
+      },
+    },
+  },
+  create_issue_label: {
+    description: "Create a new Linear issue label",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["name"],
+      properties: {
+        name: str("Label name"),
+        color: str("Hex color code"),
+        description: str("Label description"),
+        isGroup: {
+          type: "boolean",
+          default: false,
+          description: "Is label group (not directly applicable)",
+        },
+        parent: str("Parent label group name"),
+        teamId: str("Team UUID (omit for workspace label)"),
+      },
+    },
+  },
+  delete_comment: {
+    description:
+      "Delete a Linear comment. Inline description comments (those with non-null `quotedText`) anchor a mark in the editor, so their root cannot be deleted — delete the replies individually or resolve the thread instead.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["id"],
+      properties: { id: str("Comment ID") },
+    },
+  },
+  delete_status_update: {
+    description: "Delete (archive) a project or initiative status update.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["type", "id"],
+      properties: {
+        type: {
+          type: "string",
+          enum: ["project", "initiative"],
+          description: "Type of status update",
+        },
+        id: str("Status update ID"),
+      },
+    },
+  },
   list_projects: {
     description: "List projects in the user's Linear workspace",
     inputSchema: {

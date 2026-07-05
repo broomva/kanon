@@ -156,6 +156,17 @@ export const KANON_TOOL_SCHEMAS: Record<string, ToolSchema> = {
       },
     },
   },
+  list_ready_issues: {
+    description:
+      "List issues that are READY to pick up right now — dependency-unblocked (no open blocker " +
+      "in the blocking graph) and not started/done. Kanon-native: the agent's 'what can I work " +
+      "on next' queue, which Linear's MCP has no equivalent for.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: { team: str("Team filter: key, name, or ID (all teams if omitted)") },
+    },
+  },
 };
 
 export type KanonToolName = keyof typeof KANON_TOOL_SCHEMAS;

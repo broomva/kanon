@@ -1746,6 +1746,143 @@ export class KanonService {
     return { id: commentId, issueId: existing.issueId, body: text };
   }
 
+  /** delete_comment: tombstone a comment (append-only delete op). */
+  deleteComment(actor: EventActor, commentId: string): { id: string } {
+    if (!ULID_PATTERN.test(commentId)) {
+      throw new ServiceError(400, "comment id must be a ULID");
+    }
+    if (getComment(this.db, commentId) === undefined) {
+      throw new ServiceError(404, `no comment ${commentId}`);
+    }
+    this.appendAsActor(
+      actor,
+      [{ op: "delete", model: "comment", modelId: commentId, data: {} }],
+      `kanon comment delete ${commentId}`,
+    );
+    return { id: commentId };
+  }
+
+  // -- milestones (Linear parity: typed `milestones` table, imported but MCP-less) --
+
+  private requireProject(ref: string): ProjectRecord {
+    const matches = resolveProjects(this.db, ref);
+    if (matches.length === 0) throw new ServiceError(400, `no project matching "${ref}"`);
+    if (matches.length > 1) {
+      throw new ServiceError(
+        400,
+        `ambiguous project "${ref}" — candidates: ${describeCandidates(matches)}`,
+      );
+    }
+    return matches[0] as ProjectRecord;
+  }
+
+  /** save_milestone create: name (+ optional targetDate/description) under a project. */
+  createMilestone(actor: EventActor, raw: unknown): MilestoneRecord | null {
+    const body = requireBody(raw);
+    const project = this.requireProject(requireString(body, "project"));
+    const name = requireString(body, "name");
+    if (resolveMilestones(this.db, name, project.id).length > 0) {
+      throw new ServiceError(409, `a milestone named "${name}" already exists in this project`);
+    }
+    const milestoneId = ulid();
+    this.appendAsActor(
+      actor,
+      [
+        {
+          op: "create",
+          model: "milestone",
+          modelId: milestoneId,
+          data: compact({
+            projectId: project.id,
+            name,
+            targetDate: optionalString(body, "targetDate"),
+            description: optionalString(body, "description"),
+          }),
+        },
+      ],
+      `kanon milestone create ${name}`,
+    );
+    return resolveMilestones(this.db, milestoneId)[0] ?? null;
+  }
+
+  /** save_milestone update: name/targetDate(tri-state)/description on an existing milestone. */
+  updateMilestone(actor: EventActor, ref: string, raw: unknown): MilestoneRecord | null {
+    const body = requireBody(raw);
+    const projectRef = optionalString(body, "project");
+    const projectId = projectRef === undefined ? undefined : this.requireProject(projectRef).id;
+    const matches = resolveMilestones(this.db, ref, projectId);
+    if (matches.length === 0) throw new ServiceError(404, `no milestone matching "${ref}"`);
+    if (matches.length > 1) {
+      throw new ServiceError(
+        400,
+        `ambiguous milestone "${ref}" — candidates: ${describeCandidates(matches)}`,
+      );
+    }
+    const milestone = matches[0] as MilestoneRecord;
+    const data = compact({
+      name: optionalString(body, "name"),
+      targetDate: stringOrNull(body, "targetDate"),
+      description: optionalString(body, "description"),
+    });
+    if (Object.keys(data).length > 0) {
+      this.appendAsActor(
+        actor,
+        [{ op: "update", model: "milestone", modelId: milestone.id, data }],
+        `kanon milestone update ${milestone.id}`,
+      );
+    }
+    return resolveMilestones(this.db, milestone.id)[0] ?? null;
+  }
+
+  /** create_issue_label: mint a standalone label (team-scoped, or workspace when teamId omitted). */
+  createLabel(actor: EventActor, raw: unknown): LabelRecord | null {
+    const body = requireBody(raw);
+    const name = requireString(body, "name");
+    const teamRef = optionalString(body, "teamId");
+    let teamId: string | null = null;
+    if (teamRef !== undefined) {
+      const teams = resolveTeams(this.db, teamRef);
+      if (teams.length === 0) throw new ServiceError(400, `no team matching "${teamRef}"`);
+      teamId = (teams[0] as TeamRecord).id;
+    }
+    const clash = resolveLabels(this.db, name).filter((label) => label.teamId === teamId);
+    if (clash.length > 0) {
+      throw new ServiceError(409, `a label named "${name}" already exists in this scope`);
+    }
+    const labelId = ulid();
+    this.appendAsActor(
+      actor,
+      [
+        {
+          op: "create",
+          model: "label",
+          modelId: labelId,
+          data: compact({
+            name,
+            teamId: teamId ?? undefined,
+            color: optionalString(body, "color"),
+            description: optionalString(body, "description"),
+          }),
+        },
+      ],
+      `kanon label create ${name}`,
+    );
+    return resolveLabels(this.db, labelId)[0] ?? null;
+  }
+
+  /** delete_status_update: tombstone a project/initiative status update. */
+  deleteStatusUpdate(actor: EventActor, ref: string): { id: string } {
+    const matches = resolveStatusUpdates(this.db, ref);
+    if (matches.length === 0) throw new ServiceError(404, `no status update ${ref}`);
+    const id = (matches[0] as BaseRecord).id;
+    this.appendAsActor(
+      actor,
+      [{ op: "delete", model: "status_update", modelId: id, data: {} }],
+      `kanon status update delete ${id}`,
+    );
+    return { id };
+  }
+
   /**
    * POST /v1/issues/:ref/relations {type, target}. Direction convention
    * (matches the CLI + Linear importer): `{blocks, issue_id: A,

@@ -21,12 +21,16 @@ import {
   listActors,
   listComments,
   listLabels,
+  listMilestones,
   listStates,
+  resolveActors,
   resolveCycles,
   resolveDocuments,
   resolveInitiatives,
+  resolveMilestones,
   resolveProjects,
   resolveSavedViews,
+  resolveStates,
   resolveStatusUpdates,
   resolveTeams,
 } from "@kanon/store";
@@ -35,6 +39,7 @@ import {
   formatAgentSessionList,
   formatCycle,
   formatCycleList,
+  formatDeleted,
   formatDocument,
   formatDocumentList,
   formatInitiative,
@@ -42,6 +47,7 @@ import {
   formatIssueDetail,
   formatIssueList,
   formatLabelList,
+  formatMilestoneList,
   formatProject,
   formatProjectList,
   formatSavedView,
@@ -444,6 +450,105 @@ export const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
       actorType: actor.actorType,
     }));
     return formatUserList(users);
+  },
+
+  get_user(args, ctx) {
+    const actor = resolveActors(ctx.service.db, requireStr(args, "query"))[0];
+    if (actor === undefined) {
+      throw new ServiceError(404, `no user matching "${requireStr(args, "query")}"`);
+    }
+    return formatUserList([
+      {
+        id: actor.id,
+        name: actor.name,
+        displayName: actor.displayName,
+        email: actor.email,
+        actorType: actor.actorType,
+      },
+    ]);
+  },
+
+  get_issue_status(args, ctx) {
+    // Linear's contract requires id + name + team; Kanon resolves by id, else
+    // name, scoped to the team (any of the three refs finds the state).
+    const team = resolveTeams(ctx.service.db, requireStr(args, "team"))[0];
+    if (team === undefined) {
+      throw new ServiceError(404, `no team matching "${requireStr(args, "team")}"`);
+    }
+    const ref = str(args, "id") ?? requireStr(args, "name");
+    const state = resolveStates(ctx.service.db, ref, team.id)[0];
+    if (state === undefined) {
+      throw new ServiceError(404, `no status matching "${ref}" in that team`);
+    }
+    return formatStateList([state]);
+  },
+
+  list_milestones(args, ctx) {
+    const project = resolveProjects(ctx.service.db, requireStr(args, "project"))[0];
+    if (project === undefined) {
+      throw new ServiceError(404, `no project matching "${requireStr(args, "project")}"`);
+    }
+    return formatMilestoneList(listMilestones(ctx.service.db, project.id));
+  },
+
+  get_milestone(args, ctx) {
+    const project = resolveProjects(ctx.service.db, requireStr(args, "project"))[0];
+    if (project === undefined) {
+      throw new ServiceError(404, `no project matching "${requireStr(args, "project")}"`);
+    }
+    const milestone = resolveMilestones(ctx.service.db, requireStr(args, "query"), project.id)[0];
+    if (milestone === undefined) {
+      throw new ServiceError(404, `no milestone matching "${requireStr(args, "query")}"`);
+    }
+    return formatMilestoneList([milestone]);
+  },
+
+  save_milestone(args, ctx) {
+    const id = str(args, "id");
+    const milestone =
+      id === undefined
+        ? ctx.service.createMilestone(ctx.actor, {
+            project: requireStr(args, "project"),
+            name: requireStr(args, "name"),
+            description: str(args, "description"),
+            targetDate: str(args, "targetDate"),
+          })
+        : ctx.service.updateMilestone(ctx.actor, id, {
+            project: str(args, "project"),
+            name: str(args, "name"),
+            description: str(args, "description"),
+            targetDate: strOrNull(args, "targetDate"),
+          });
+    if (milestone === null) throw new ServiceError(500, "milestone save returned no record");
+    return formatMilestoneList([milestone]);
+  },
+
+  create_issue_label(args, ctx) {
+    const label = ctx.service.createLabel(
+      ctx.actor,
+      clean({
+        name: requireStr(args, "name"),
+        color: str(args, "color"),
+        description: str(args, "description"),
+        teamId: str(args, "teamId"),
+      }),
+    );
+    if (label === null) throw new ServiceError(500, "label create returned no record");
+    return formatLabelList([label]);
+  },
+
+  delete_comment(args, ctx) {
+    const { id } = ctx.service.deleteComment(ctx.actor, requireStr(args, "id"));
+    return formatDeleted("comment", id);
+  },
+
+  delete_status_update(args, ctx) {
+    const { id } = ctx.service.deleteStatusUpdate(ctx.actor, requireStr(args, "id"));
+    return formatDeleted("status update", id);
+  },
+
+  list_ready_issues(args, ctx) {
+    return formatIssueList(ctx.service.db, ctx.service.ready(str(args, "team")), "Ready to work");
   },
 
   list_cycles(args, ctx) {

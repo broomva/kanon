@@ -62,6 +62,49 @@
       }
     },
     "get_team": { "required": ["query"], "props": { "query": { "type": "string" } } },
+    "get_user": { "required": ["query"], "props": { "query": { "type": "string" } } },
+    "get_issue_status": {
+      "required": ["id", "name", "team"],
+      "props": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "team": { "type": "string" }
+      }
+    },
+    "list_milestones": { "required": ["project"], "props": { "project": { "type": "string" } } },
+    "get_milestone": {
+      "required": ["project", "query"],
+      "props": { "project": { "type": "string" }, "query": { "type": "string" } }
+    },
+    "save_milestone": {
+      "required": ["project"],
+      "props": {
+        "description": { "type": "string" },
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "project": { "type": "string" },
+        "targetDate": {}
+      }
+    },
+    "create_issue_label": {
+      "required": ["name"],
+      "props": {
+        "color": { "type": "string" },
+        "description": { "type": "string" },
+        "isGroup": { "type": "boolean" },
+        "name": { "type": "string" },
+        "parent": { "type": "string" },
+        "teamId": { "type": "string" }
+      }
+    },
+    "delete_comment": { "required": ["id"], "props": { "id": { "type": "string" } } },
+    "delete_status_update": {
+      "required": ["id", "type"],
+      "props": {
+        "id": { "type": "string" },
+        "type": { "type": "string", "enum": ["project", "initiative"] }
+      }
+    },
     "list_projects": {
       "required": [],
       "props": {
