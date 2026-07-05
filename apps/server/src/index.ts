@@ -42,6 +42,7 @@ export function startServer(config: ServerConfig): RunningServer {
   // Startup sync + periodic pull --rebase → refresh → broadcast.
   service.syncWithRemote();
   let syncTimer: ReturnType<typeof setInterval> | undefined;
+  let reloadTimer: ReturnType<typeof setInterval> | undefined;
   if (config.gitRemoteSync) {
     syncTimer = setInterval(() => {
       try {
@@ -56,6 +57,27 @@ export function startServer(config: ServerConfig): RunningServer {
     }, config.syncIntervalMs);
     if (typeof syncTimer === "object" && "unref" in syncTimer) {
       syncTimer.unref();
+    }
+  } else if (config.reloadIntervalMs > 0) {
+    // Shadow-mirror mode: no git remote, but an out-of-band importer appends to
+    // the data repo. Periodically re-read the segments so the served view and
+    // SSE subscribers pick up imported events without a restart.
+    reloadTimer = setInterval(() => {
+      try {
+        const fresh = service.reloadFromDisk();
+        if (fresh.length > 0) {
+          console.warn(`kanon-server: periodic reload observed ${fresh.length} new event(s)`);
+        }
+      } catch (error) {
+        console.warn(
+          `kanon-server: periodic reload failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }, config.reloadIntervalMs);
+    if (typeof reloadTimer === "object" && "unref" in reloadTimer) {
+      reloadTimer.unref();
     }
   }
 
@@ -100,6 +122,7 @@ export function startServer(config: ServerConfig): RunningServer {
     deliverer,
     stop(): void {
       if (syncTimer !== undefined) clearInterval(syncTimer);
+      if (reloadTimer !== undefined) clearInterval(reloadTimer);
       if (janitorTimer !== undefined) clearInterval(janitorTimer);
       deliverer.stop();
       server.stop(true);

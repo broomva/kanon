@@ -53,6 +53,34 @@ bun tools/linear-import/src/index.ts --data-repo ~/kanon-data --live --save-expo
    ULID. Imports routinely append newer-ULID events into old-month files —
    segment files are never immutable.
 
+## Shadow-mirror refresh loop
+
+The one-shot importer becomes a **living shadow mirror** when run on a timer:
+`refresh.sh` re-imports Linear into a shadow data repo on a schedule, and the
+serving `kanon-server` (started with `KANON_GIT_REMOTE_SYNC=0`) picks up the
+appended events on its next `KANON_RELOAD_INTERVAL` disk-reload — no restart,
+no dropped SSE. This keeps the shadow current with Linear for the migration
+soak + dogfood (BRO-1651) without touching the Linear→Kanon cutover.
+
+```sh
+# on the VPS (agent@ layout): seed the env, set LINEAR_API_KEY, enable the timer
+tools/linear-import/deploy/install.sh          # first run seeds the env file, exits 2
+$EDITOR /home/agent/kanon-shadow-refresh.env   # set a real LINEAR_API_KEY
+tools/linear-import/deploy/install.sh          # installs + enables the timer
+
+# the shadow server must reload from disk (it has no git remote to pull):
+#   KANON_RELOAD_INTERVAL=60   in the server's EnvironmentFile
+```
+
+`refresh.sh` is idempotent and single-flighted (`flock`): a run that finds no
+Linear delta appends nothing, and a slow run never overlaps the next tick. The
+run-log is `journalctl -u kanon-shadow-refresh`, plus an optional one-line JSON
+receipt per run when `KANON_REFRESH_LOG` is set (for the mirror-diff soak).
+
+> **Same operational limits as the one-shot importer apply** (comments don't
+> re-sync, deletions don't propagate, and the shadow repo must not receive
+> durable local writes — imported fields are clobbered on the next refresh).
+
 ## Package layout
 
 | File | Role |
@@ -64,3 +92,7 @@ bun tools/linear-import/src/index.ts --data-repo ~/kanon-data --live --save-expo
 | `src/data-repo.ts` | local `loadEvents` / `buildIdMap` / `appendEvents` / `seedDisplayCounters` |
 | `src/index.ts` | CLI entry point |
 | `fixtures/export.small.json` | reference fixture used by the tests |
+| `refresh.sh` | idempotent, single-flighted timer wrapper for the live re-import |
+| `deploy/kanon-shadow-refresh.{service,timer}` | systemd oneshot + timer |
+| `deploy/kanon-shadow-refresh.env.example` | env template (copy, set `LINEAR_API_KEY`, `chmod 600`) |
+| `deploy/install.sh` | idempotent VPS installer for the timer |

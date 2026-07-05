@@ -33,7 +33,16 @@ describe("loadConfig", () => {
     const config = loadConfig(base);
     expect(config.gitRemoteSync).toBe(true);
     expect(config.syncIntervalMs).toBe(30_000);
+    expect(config.reloadIntervalMs).toBe(0);
     expect(config.port).toBe(3000);
+  });
+
+  test("KANON_RELOAD_INTERVAL sets the disk-reload cadence (seconds → ms)", () => {
+    expect(loadConfig({ ...base, KANON_RELOAD_INTERVAL: "15" }).reloadIntervalMs).toBe(15_000);
+    // 0 is a valid value (explicitly off), unlike KANON_SYNC_INTERVAL's min of 1.
+    expect(loadConfig({ ...base, KANON_RELOAD_INTERVAL: "0" }).reloadIntervalMs).toBe(0);
+    expect(() => loadConfig({ ...base, KANON_RELOAD_INTERVAL: "-1" })).toThrow(ConfigError);
+    expect(() => loadConfig({ ...base, KANON_RELOAD_INTERVAL: "soon" })).toThrow(ConfigError);
   });
 
   test("KANON_GIT_REMOTE_SYNC=0 disables remote sync", () => {
