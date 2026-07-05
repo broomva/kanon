@@ -87,6 +87,31 @@ mirror-diff soak).
 > re-sync, deletions don't propagate, and the shadow repo must not receive
 > durable local writes — imported fields are clobbered on the next refresh).
 
+## Mirror-diff soak (does the shadow match Linear?)
+
+The refresh loop keeps the shadow *current*; the **mirror-diff** proves it is
+*correct* — the read-only gate for the cutover (BRO-1651 step 2). It compares
+each system via its own read path — live Linear (`@linear/sdk`) vs the shadow's
+REST `:8793` — joined on `data.linearId`, and reports whether every issue's
+title / state / priority / assignee / project / labels / archived match.
+
+```sh
+# one-shot check (exit 0 converged · 1 diverged · 2 error)
+KANON_API_KEY=<shadow-bearer> LINEAR_API_KEY=lin_… \
+  bun tools/linear-import/src/diff-cli.ts --json
+
+# 48h soak on the VPS: every 6h, receipt appended to ~/kanon-mirror-diff.jsonl
+tools/linear-import/deploy/install-diff.sh          # first run seeds the env, exits 2
+$EDITOR /home/agent/kanon-mirror-diff.env           # LINEAR_API_KEY + KANON_API_KEY
+tools/linear-import/deploy/install-diff.sh          # installs + enables the timer
+```
+
+**Convergence gate:** `converged = onlyInLinear == 0 && field-mismatches == 0`.
+Known-limit divergences are **reported, not hard-failed** — a description-only
+diff (soft) and `onlyInKanon` (an issue deleted in Linear the importer can't
+propagate) show in the report but don't flip `converged`. Nothing is written to
+either system. Soak is green when 48h of receipts all read `converged: true`.
+
 ## Package layout
 
 | File | Role |
@@ -98,7 +123,10 @@ mirror-diff soak).
 | `src/data-repo.ts` | local `loadEvents` / `buildIdMap` / `appendEvents` / `seedDisplayCounters` |
 | `src/index.ts` | CLI entry point |
 | `fixtures/export.small.json` | reference fixture used by the tests |
+| `src/diff.ts` | pure mirror-diff core — normalize both sides to linearId space + `diffIssues` |
+| `src/diff-cli.ts` | fetch live Linear + shadow REST, run the diff, report + receipt (read-only) |
 | `refresh.sh` | idempotent, single-flighted timer wrapper for the live re-import |
-| `deploy/kanon-shadow-refresh.{service,timer}` | systemd oneshot + timer |
-| `deploy/kanon-shadow-refresh.env.example` | env template (copy, set `LINEAR_API_KEY`, `chmod 600`) |
-| `deploy/install.sh` | idempotent VPS installer for the timer |
+| `deploy/kanon-shadow-refresh.{service,timer}` | refresh systemd oneshot + timer |
+| `deploy/kanon-mirror-diff.{service,timer}` | mirror-diff soak systemd oneshot + timer |
+| `deploy/*.env.example` | env templates (copy, set secrets, `chmod 600`) |
+| `deploy/install.sh` / `install-diff.sh` | idempotent VPS installers (refresh / diff) |
