@@ -52,8 +52,9 @@ describe("diffIssues", () => {
 
   test("labels compare as an order-independent set", () => {
     const linear = [norm({ linearId: "L1", labelLinearIds: ["a", "b"] })];
-    const sameOrderSwapped = [norm({ linearId: "L1", labelLinearIds: ["a", "b"] })];
-    expect(diffIssues(linear, sameOrderSwapped).converged).toBe(true);
+    // Genuinely reversed order — exercises the order-independence claim.
+    const swapped = [norm({ linearId: "L1", labelLinearIds: ["b", "a"] })];
+    expect(diffIssues(linear, swapped).converged).toBe(true);
     const missingLabel = [norm({ linearId: "L1", labelLinearIds: ["a"] })];
     const report = diffIssues(linear, missingLabel);
     expect(report.converged).toBe(false);

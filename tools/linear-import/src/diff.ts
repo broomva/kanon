@@ -86,10 +86,14 @@ function ref(issue: NormIssue): IssueRef {
   return { linearId: issue.linearId, identifier: issue.identifier };
 }
 
+/** Order-independent equality on two string arrays (sorts copies — the inputs
+ *  are normalized pre-sorted, so this is belt-and-suspenders). */
 function sameSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
+  const x = [...a].sort();
+  const y = [...b].sort();
+  for (let i = 0; i < x.length; i++) {
+    if (x[i] !== y[i]) return false;
   }
   return true;
 }
