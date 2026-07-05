@@ -399,6 +399,18 @@ export class KanonService {
     }
   }
 
+  /**
+   * Re-read the event segments from disk and broadcast every event not seen
+   * before — the reload half of syncWithRemote() WITHOUT the git pull. For a
+   * shadow mirror (gitRemoteSync off) fed by an out-of-band importer: a
+   * periodic caller picks up the appended events so the served view and SSE
+   * subscribers stay current with the log on disk, no restart required.
+   * Returns the events newly observed by this reload.
+   */
+  reloadFromDisk(): KanonEvent[] {
+    return this.reload(true);
+  }
+
   /** Startup + every KANON_SYNC_INTERVAL: pull --rebase, refresh, broadcast. */
   syncWithRemote(): void {
     if (this.gitRemoteSync) {

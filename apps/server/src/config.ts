@@ -16,6 +16,13 @@
  *                          pull --rebase + refresh the projection. "0" for a
  *                          remote-less clone (tests, air-gapped).
  *   KANON_SYNC_INTERVAL    seconds between pull --rebase cycles (default 30).
+ *   KANON_RELOAD_INTERVAL  seconds between plain disk-reload cycles (no git
+ *                          pull), for a shadow mirror (KANON_GIT_REMOTE_SYNC=0)
+ *                          fed by an out-of-band importer: the server re-reads
+ *                          the segments so the served view + SSE subscribers
+ *                          pick up appended events without a restart. Default
+ *                          0 = off. Ignored when KANON_GIT_REMOTE_SYNC is on
+ *                          (the sync loop already reloads after each pull).
  *   KANON_WEBHOOK_INTERVAL_MS  webhook delivery-loop tick (default 500).
  *   KANON_SESSION_STALE_MS agent sessions still pending/active/awaitingInput
  *                          with no movement for this long are marked `stale`
@@ -49,6 +56,8 @@ export interface ServerConfig {
   /** Allow webhook targets on private/loopback ranges (SSRF guard off). */
   allowPrivateWebhooks: boolean;
   syncIntervalMs: number;
+  /** Plain disk-reload cadence for a shadow mirror; 0 = off. */
+  reloadIntervalMs: number;
   webhookIntervalMs: number;
   /** Inactivity threshold before the janitor stales a live session; 0 = off. */
   sessionStaleMs: number;
@@ -132,6 +141,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     gitRemoteSync: (env.KANON_GIT_REMOTE_SYNC ?? "1") !== "0",
     allowPrivateWebhooks: (env.KANON_WEBHOOK_ALLOW_PRIVATE ?? "0") === "1",
     syncIntervalMs: intEnv(env, "KANON_SYNC_INTERVAL", 30, 1) * 1000,
+    reloadIntervalMs: intEnv(env, "KANON_RELOAD_INTERVAL", 0, 0) * 1000,
     webhookIntervalMs: intEnv(env, "KANON_WEBHOOK_INTERVAL_MS", 500, 10),
     sessionStaleMs: intEnv(env, "KANON_SESSION_STALE_MS", 1_800_000, 0),
     sessionJanitorIntervalMs: intEnv(env, "KANON_SESSION_JANITOR_INTERVAL_MS", 60_000, 10),

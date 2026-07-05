@@ -9,8 +9,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { EventActor } from "@kanon/core";
-import { initDataRepo } from "@kanon/store";
+import { createEvent, type EventActor } from "@kanon/core";
+import { appendEvents, initDataRepo } from "@kanon/store";
 import { KanonService } from "./service";
 
 const ACTOR: EventActor = { type: "agent", id: "svc@example.com", surface: "mcp" };
@@ -49,6 +49,41 @@ describe("KanonService", () => {
       "Duplicate",
     ]);
     expect(service.listTeams()).toHaveLength(1);
+  });
+
+  test("reloadFromDisk picks up out-of-band appended events and broadcasts them", () => {
+    const service = boot();
+    const before = service.eventCount();
+
+    // Simulate an out-of-band importer appending straight to the log segments
+    // — exactly what tools/linear-import does (no server API, no git). This is
+    // the shadow-mirror refresh path: the running server must observe these.
+    const event = createEvent({
+      workspace: service.workspace,
+      actor: { type: "app", id: "linear-import", surface: "import" },
+      op: "create",
+      model: "team",
+      data: { key: "BRO", name: "Broomva" },
+    });
+    appendEvents(service.dataDir, [event]);
+
+    // Until a reload, the in-memory stream has not moved.
+    expect(service.eventCount()).toBe(before);
+
+    const broadcast: string[] = [];
+    const unsubscribe = service.bus.subscribe((e) => broadcast.push(e.id));
+
+    const fresh = service.reloadFromDisk();
+    expect(fresh.map((e) => e.id)).toEqual([event.id]);
+    expect(service.eventCount()).toBe(before + 1);
+    expect(broadcast).toEqual([event.id]);
+    expect(service.listTeams().map((t) => t.key)).toContain("BRO");
+
+    // Idempotent: a second reload with nothing new returns + broadcasts nothing.
+    expect(service.reloadFromDisk()).toEqual([]);
+    expect(broadcast).toEqual([event.id]);
+
+    unsubscribe();
   });
 
   test("createIssue allocates sequential display numbers", () => {
