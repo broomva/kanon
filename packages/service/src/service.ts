@@ -1764,22 +1764,10 @@ export class KanonService {
 
   // -- milestones (Linear parity: typed `milestones` table, imported but MCP-less) --
 
-  private requireProject(ref: string): ProjectRecord {
-    const matches = resolveProjects(this.db, ref);
-    if (matches.length === 0) throw new ServiceError(400, `no project matching "${ref}"`);
-    if (matches.length > 1) {
-      throw new ServiceError(
-        400,
-        `ambiguous project "${ref}" — candidates: ${describeCandidates(matches)}`,
-      );
-    }
-    return matches[0] as ProjectRecord;
-  }
-
   /** save_milestone create: name (+ optional targetDate/description) under a project. */
   createMilestone(actor: EventActor, raw: unknown): MilestoneRecord | null {
     const body = requireBody(raw);
-    const project = this.requireProject(requireString(body, "project"));
+    const project = this.requireProjectRef(requireString(body, "project"));
     const name = requireString(body, "name");
     if (resolveMilestones(this.db, name, project.id).length > 0) {
       throw new ServiceError(409, `a milestone named "${name}" already exists in this project`);
@@ -1809,7 +1797,7 @@ export class KanonService {
   updateMilestone(actor: EventActor, ref: string, raw: unknown): MilestoneRecord | null {
     const body = requireBody(raw);
     const projectRef = optionalString(body, "project");
-    const projectId = projectRef === undefined ? undefined : this.requireProject(projectRef).id;
+    const projectId = projectRef === undefined ? undefined : this.requireProjectRef(projectRef).id;
     const matches = resolveMilestones(this.db, ref, projectId);
     if (matches.length === 0) throw new ServiceError(404, `no milestone matching "${ref}"`);
     if (matches.length > 1) {
@@ -1819,8 +1807,22 @@ export class KanonService {
       );
     }
     const milestone = matches[0] as MilestoneRecord;
+    const newName = optionalString(body, "name");
+    if (newName !== undefined) {
+      // Rename must preserve the per-project name-uniqueness invariant that
+      // createMilestone enforces (parity with updateProject/updateInitiative).
+      const clash = resolveMilestones(this.db, newName, milestone.projectId ?? undefined).filter(
+        (match) => match.id !== milestone.id,
+      );
+      if (clash.length > 0) {
+        throw new ServiceError(
+          409,
+          `a milestone named "${newName}" already exists in this project`,
+        );
+      }
+    }
     const data = compact({
-      name: optionalString(body, "name"),
+      name: newName,
       targetDate: stringOrNull(body, "targetDate"),
       description: optionalString(body, "description"),
     });
@@ -1839,12 +1841,9 @@ export class KanonService {
     const body = requireBody(raw);
     const name = requireString(body, "name");
     const teamRef = optionalString(body, "teamId");
-    let teamId: string | null = null;
-    if (teamRef !== undefined) {
-      const teams = resolveTeams(this.db, teamRef);
-      if (teams.length === 0) throw new ServiceError(400, `no team matching "${teamRef}"`);
-      teamId = (teams[0] as TeamRecord).id;
-    }
+    // requireTeamRef 400s on ambiguity; team names aren't unique (only `key` is),
+    // so silently taking the first match could scope the label to the wrong team.
+    const teamId = teamRef === undefined ? null : this.requireTeamRef(teamRef).id;
     const clash = resolveLabels(this.db, name).filter((label) => label.teamId === teamId);
     if (clash.length > 0) {
       throw new ServiceError(409, `a label named "${name}" already exists in this scope`);

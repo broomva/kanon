@@ -556,6 +556,15 @@ describe("MCP parity expansion (BRO-1695)", () => {
     });
     expect(renamed.isError).toBeFalsy();
     expect(text(renamed)).toContain("v1.0");
+    // Rename must preserve per-project name uniqueness (createMilestone enforces it).
+    await call(client, "save_milestone", { project: "Alpha", name: "v2" });
+    const clash = await call(client, "save_milestone", {
+      project: "Alpha",
+      id: "v2",
+      name: "v1.0",
+    });
+    expect(clash.isError).toBe(true);
+    expect(text(clash)).toContain("already exists");
   });
 
   test("create_issue_label mints a label; duplicate in scope is rejected", async () => {
@@ -570,6 +579,13 @@ describe("MCP parity expansion (BRO-1695)", () => {
     expect(text(await call(client, "list_issue_labels", {}))).toContain("bug");
     const dup = await call(client, "create_issue_label", { name: "bug", teamId: "BRO" });
     expect(dup.isError).toBe(true);
+    // `parent`/`isGroup` exist for Linear schema parity but have no substrate —
+    // reject rather than silently drop.
+    const nested = await call(client, "create_issue_label", { name: "child", parent: "bug" });
+    expect(nested.isError).toBe(true);
+    expect(text(nested)).toContain("group hierarchy");
+    const group = await call(client, "create_issue_label", { name: "grp", isGroup: true });
+    expect(group.isError).toBe(true);
   });
 
   test("get_user resolves a minted actor; get_issue_status resolves a workflow state", async () => {
@@ -587,6 +603,11 @@ describe("MCP parity expansion (BRO-1695)", () => {
     });
     expect(status.isError).toBeFalsy();
     expect(text(status)).toContain("Todo");
+
+    // A blank `id` must fall back to `name` rather than 404 on the empty ref.
+    const blankId = await call(client, "get_issue_status", { team: "BRO", id: "", name: "Todo" });
+    expect(blankId.isError).toBeFalsy();
+    expect(text(blankId)).toContain("Todo");
   });
 
   test("delete_comment tombstones a comment", async () => {

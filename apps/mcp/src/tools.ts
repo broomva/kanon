@@ -475,7 +475,8 @@ export const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
     if (team === undefined) {
       throw new ServiceError(404, `no team matching "${requireStr(args, "team")}"`);
     }
-    const ref = str(args, "id") ?? requireStr(args, "name");
+    const idRef = str(args, "id");
+    const ref = idRef !== undefined && idRef.trim().length > 0 ? idRef : requireStr(args, "name");
     const state = resolveStates(ctx.service.db, ref, team.id)[0];
     if (state === undefined) {
       throw new ServiceError(404, `no status matching "${ref}" in that team`);
@@ -524,6 +525,16 @@ export const TOOL_HANDLERS: Record<ToolName, ToolHandler> = {
   },
 
   create_issue_label(args, ctx) {
+    // Kanon models flat labels only; Linear's `parent`/`isGroup` are kept in the
+    // schema for parity but have no substrate here — reject rather than silently
+    // drop, so a caller expecting a nested/group label gets an honest error.
+    const parent = str(args, "parent");
+    if ((parent !== undefined && parent.length > 0) || args.isGroup === true) {
+      throw new ServiceError(
+        400,
+        "Kanon labels have no group hierarchy — `parent`/`isGroup` are not supported",
+      );
+    }
     const label = ctx.service.createLabel(
       ctx.actor,
       clean({
