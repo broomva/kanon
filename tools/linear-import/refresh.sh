@@ -27,12 +27,14 @@ die() { log "error: $*"; exit 1; }
 # --- resolve config -------------------------------------------------------
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 KANON_REPO="${KANON_REPO:-$(cd "$script_dir/../.." && pwd)}"
-BUN="${BUN:-$(command -v bun || true)}"
+# Resolve bun to a single absolute path — accept a bare name or an explicit
+# path, fall back to the default install location, then require it executable.
+BUN="$(command -v "${BUN:-bun}" 2>/dev/null || true)"
 [ -n "$BUN" ] || BUN="$HOME/.bun/bin/bun"
 
 [ -n "${KANON_DATA_DIR:-}" ]  || die "KANON_DATA_DIR is required (the shadow data repo)"
 [ -n "${LINEAR_API_KEY:-}" ]  || die "LINEAR_API_KEY is required (the live Linear pull needs it)"
-[ -x "$BUN" ] || command -v "$BUN" >/dev/null 2>&1 || die "bun not found at '$BUN' (set BUN=/path/to/bun)"
+[ -x "$BUN" ] || die "bun not found at '$BUN' (set BUN=/path/to/bun)"
 [ -f "$KANON_DATA_DIR/meta.json" ] || die "$KANON_DATA_DIR is not a kanon data repo (no meta.json)"
 [ -f "$KANON_REPO/tools/linear-import/src/index.ts" ] || die "KANON_REPO '$KANON_REPO' has no tools/linear-import"
 
@@ -58,7 +60,7 @@ printf '%s\n' "$out"
 
 # Optional durable one-line receipt for the mirror-diff soak (BRO-1651 step 2).
 if [ -n "${KANON_REFRESH_LOG:-}" ]; then
-  TS="$ts" EXIT="$code" printf '%s' "$out" | "$BUN" -e '
+  printf '%s' "$out" | TS="$ts" EXIT="$code" "$BUN" -e '
     const raw = require("node:fs").readFileSync(0, "utf8").trim();
     let imp = null; try { imp = JSON.parse(raw); } catch {}
     process.stdout.write(JSON.stringify({ ts: process.env.TS, exit: Number(process.env.EXIT), import: imp }) + "\n");

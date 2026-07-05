@@ -1,6 +1,9 @@
 # kanon-shadow-refresh.service — one Linear → Kanon shadow re-import.
 # Timer-triggered (kanon-shadow-refresh.timer); installed by deploy/install.sh.
-# Paths follow the agent@ VPS layout (mirrors kanon-live.service).
+# Paths follow the agent@ VPS layout. kanon-live.service is host-provided (not
+# shipped here); After= is a soft ordering hint only — the refresh writes log
+# segments the server reloads on its own tick, so it is safe even if the server
+# is down. Nothing here starts the server.
 [Unit]
 Description=Kanon shadow-mirror refresh (Linear -> Kanon re-import)
 After=network-online.target kanon-live.service

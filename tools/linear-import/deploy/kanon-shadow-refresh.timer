@@ -1,13 +1,14 @@
 # kanon-shadow-refresh.timer — periodic shadow re-import.
 # Cadence pairs with the shadow server's KANON_RELOAD_INTERVAL: the timer pulls
-# from Linear every OnUnitActiveSec; the server reflects appended events within
-# one reload interval. Persistent=true catches up one missed run after downtime.
+# from Linear on each OnCalendar tick; the server reflects appended events
+# within one reload interval. A realtime (OnCalendar) schedule is used so
+# Persistent=true is meaningful — a run missed while the box was down fires once
+# at the next boot (monotonic OnUnitActiveSec timers get no such catch-up).
 [Unit]
 Description=Periodic Kanon shadow-mirror refresh (Linear -> Kanon)
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=30min
+OnCalendar=*:0/30
 Persistent=true
 RandomizedDelaySec=60
 

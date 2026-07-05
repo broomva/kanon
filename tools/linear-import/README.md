@@ -72,10 +72,16 @@ tools/linear-import/deploy/install.sh          # installs + enables the timer
 #   KANON_RELOAD_INTERVAL=60   in the server's EnvironmentFile
 ```
 
-`refresh.sh` is idempotent and single-flighted (`flock`): a run that finds no
-Linear delta appends nothing, and a slow run never overlaps the next tick. The
+`refresh.sh` is idempotent and single-flighted: a run that finds no Linear delta
+appends nothing, and the `flock` guard stops one refresh from overlapping the
+next (refresh-vs-refresh only — it does not coordinate with the server's reader).
+The server-vs-writer race is benign by design: appends are append-only and
+merged by ULID, and if a reload happens to read a partially-written tail, that
+tick's `loadLog` throws, the reload is skipped, and the next tick re-reads the
+now-complete file — `this.log` is only ever replaced on a clean load. The
 run-log is `journalctl -u kanon-shadow-refresh`, plus an optional one-line JSON
-receipt per run when `KANON_REFRESH_LOG` is set (for the mirror-diff soak).
+receipt per run (`{ts, exit, import}`) when `KANON_REFRESH_LOG` is set (for the
+mirror-diff soak).
 
 > **Same operational limits as the one-shot importer apply** (comments don't
 > re-sync, deletions don't propagate, and the shadow repo must not receive
