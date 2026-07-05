@@ -1,0 +1,20 @@
+# kanon-mirror-diff.service — one shadow-vs-live-Linear convergence check.
+# Timer-triggered (kanon-mirror-diff.timer); installed by deploy/install-diff.sh.
+# READ-ONLY on both sides — the BRO-1651 soak gate, never the cutover.
+# kanon-live.service is host-provided; After= is a soft ordering hint only.
+[Unit]
+Description=Kanon mirror-diff (shadow vs live Linear convergence)
+After=network-online.target kanon-live.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=agent
+WorkingDirectory=/home/agent/kanon
+EnvironmentFile=/home/agent/kanon-mirror-diff.env
+ExecStart=/home/agent/.bun/bin/bun tools/linear-import/src/diff-cli.ts --receipt /home/agent/kanon-mirror-diff.jsonl
+# A diverged mirror exits 1 — that is a RECORDED finding (in the receipt +
+# journal), not a unit failure. Only exit 2 (a real error) fails the unit.
+SuccessExitStatus=0 1
+TimeoutStartSec=900
+Nice=10

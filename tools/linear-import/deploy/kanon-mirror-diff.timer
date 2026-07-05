@@ -1,0 +1,13 @@
+# kanon-mirror-diff.timer — periodic shadow-vs-Linear convergence check.
+# Every 6h; OnCalendar (realtime) so Persistent=true gives downtime catch-up.
+# Receipts accumulate at ~/kanon-mirror-diff.jsonl over the 48h soak window.
+[Unit]
+Description=Periodic Kanon mirror-diff (shadow vs live Linear)
+
+[Timer]
+OnCalendar=0/6:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

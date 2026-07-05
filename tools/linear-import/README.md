@@ -87,6 +87,45 @@ mirror-diff soak).
 > re-sync, deletions don't propagate, and the shadow repo must not receive
 > durable local writes — imported fields are clobbered on the next refresh).
 
+## Mirror-diff soak (does the shadow match Linear?)
+
+The refresh loop keeps the shadow *current*; the **mirror-diff** proves it is
+*correct* — the read-only gate for the cutover (BRO-1651 step 2). It compares
+each system via its own read path — live Linear (`@linear/sdk`) vs the shadow's
+REST `:8793` — joined on `data.linearId`, and reports whether every issue's
+title / state / priority / assignee / project / labels / archived match.
+
+```sh
+# one-shot check (exit 0 converged · 1 diverged · 2 error)
+KANON_API_KEY=<shadow-bearer> LINEAR_API_KEY=lin_… \
+  bun tools/linear-import/src/diff-cli.ts --json
+
+# 48h soak on the VPS: every 6h, receipt appended to ~/kanon-mirror-diff.jsonl
+tools/linear-import/deploy/install-diff.sh          # first run seeds the env, exits 2
+$EDITOR /home/agent/kanon-mirror-diff.env           # LINEAR_API_KEY + KANON_API_KEY
+tools/linear-import/deploy/install-diff.sh          # installs + enables the timer
+```
+
+**Convergence gate:** `converged = onlyInLinear == 0 && field-mismatches == 0`.
+Known-limit divergences are **reported, not hard-failed** — a description-only
+diff (soft) and `onlyInKanon` (an issue deleted in Linear, or absent from the
+pull) show in the report but don't flip `converged`. Nothing is written to
+either system.
+
+**Reading the soak (not "every receipt must be green").** The diff and the
+refresh run on independent timers, so a single non-converged receipt is
+*expected* during active work: an issue edited in Linear is drift until the
+next refresh (≤30 min) catches it, and a mid-flight edit during the multi-minute
+Linear pull shows as drift for one run. Such transients **self-heal on the next
+diff**. The soak is green when, over the 48h window:
+
+1. the **receipt count matches the expected run count** (≈8 at 6h cadence, plus
+   catch-ups) — a *missing* receipt means a run errored (exit 2), not that it
+   converged, so a short count fails the gate; **and**
+2. no drift **persists across ≥2 consecutive diffs** (i.e. survives a refresh
+   cycle). A mismatch on the same issue in back-to-back receipts is real
+   divergence and blocks the cutover; an isolated one-run blip is refresh lag.
+
 ## Package layout
 
 | File | Role |
@@ -98,7 +137,10 @@ mirror-diff soak).
 | `src/data-repo.ts` | local `loadEvents` / `buildIdMap` / `appendEvents` / `seedDisplayCounters` |
 | `src/index.ts` | CLI entry point |
 | `fixtures/export.small.json` | reference fixture used by the tests |
+| `src/diff.ts` | pure mirror-diff core — normalize both sides to linearId space + `diffIssues` |
+| `src/diff-cli.ts` | fetch live Linear + shadow REST, run the diff, report + receipt (read-only) |
 | `refresh.sh` | idempotent, single-flighted timer wrapper for the live re-import |
-| `deploy/kanon-shadow-refresh.{service,timer}` | systemd oneshot + timer |
-| `deploy/kanon-shadow-refresh.env.example` | env template (copy, set `LINEAR_API_KEY`, `chmod 600`) |
-| `deploy/install.sh` | idempotent VPS installer for the timer |
+| `deploy/kanon-shadow-refresh.{service,timer}` | refresh systemd oneshot + timer |
+| `deploy/kanon-mirror-diff.{service,timer}` | mirror-diff soak systemd oneshot + timer |
+| `deploy/*.env.example` | env templates (copy, set secrets, `chmod 600`) |
+| `deploy/install.sh` / `install-diff.sh` | idempotent VPS installers (refresh / diff) |
