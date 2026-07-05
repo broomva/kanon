@@ -37,6 +37,8 @@ export interface FieldMismatch {
   field: string;
   linear: unknown;
   kanon: unknown;
+  /** Soft fields (description) are reported but never break convergence. */
+  soft?: boolean;
 }
 export interface IssueMismatch {
   linearId: string;
@@ -63,7 +65,7 @@ export interface DiffReport {
   descriptionOnly: IssueRef[];
   /** In Linear, absent from the shadow — a real gap (breaks convergence). */
   onlyInLinear: IssueRef[];
-  /** In the shadow, gone from Linear — a deletion the importer can't propagate (known limit). */
+  /** In the shadow, not in the current Linear pull — a Linear deletion the importer can't propagate, or (rarely) an issue absent from the pull. Soft. */
   onlyInKanon: IssueRef[];
   /** onlyInLinear.length === 0 && mismatches.length === 0. */
   converged: boolean;
@@ -104,7 +106,12 @@ function compareFields(linear: NormIssue, kanon: NormIssue): FieldMismatch[] {
     out.push({ field: "labels", linear: linear.labelLinearIds, kanon: kanon.labelLinearIds });
   }
   if (linear.description !== kanon.description) {
-    out.push({ field: "description", linear: linear.description, kanon: kanon.description });
+    out.push({
+      field: "description",
+      linear: linear.description,
+      kanon: kanon.description,
+      soft: true,
+    });
   }
   return out;
 }
@@ -133,7 +140,7 @@ export function diffIssues(linear: NormIssue[], kanon: NormIssue[], kanonNative 
     const fields = compareFields(lin, kan);
     if (fields.length === 0) {
       matched++;
-    } else if (fields.every((f) => f.field === "description")) {
+    } else if (fields.every((f) => f.soft === true)) {
       descriptionOnly.push(ref(lin));
     } else {
       mismatches.push({ linearId: lin.linearId, identifier: lin.identifier, fields });
@@ -201,6 +208,9 @@ export interface KanonIssue extends KanonEntity {
   archivedAt: string | null;
 }
 
+/** Prefix marking a Kanon ref that had a value but resolved to no linearId. */
+export const UNRESOLVED_PREFIX = "!unresolved:";
+
 /** Build a Kanon-ULID → Linear-UUID map from a catalog entity list. */
 function linearIdMap(entities: KanonEntity[]): Map<string, string> {
   const map = new Map<string, string>();
@@ -227,8 +237,12 @@ export function normalizeKanonIssues(
   const actorMap = linearIdMap(catalog.actors);
   const issueMap = linearIdMap(issues); // issue ULID → its own linearId, for parent resolution
 
+  // A present-but-unresolvable Kanon ref (e.g. pointing at a tombstoned entity
+  // the catalog filters out) must NOT collapse to "" — that would false-match a
+  // Linear side that is legitimately empty (unassigned / no project). Tag it so
+  // it can only ever equal itself, surfacing the broken ref as real drift.
   const resolve = (map: Map<string, string>, id: string | null): string =>
-    id === null ? "" : (map.get(id) ?? "");
+    id === null ? "" : (map.get(id) ?? `${UNRESOLVED_PREFIX}${id}`);
 
   const out: NormIssue[] = [];
   let native = 0;
@@ -249,8 +263,10 @@ export function normalizeKanonIssues(
       projectLinearId: resolve(projectMap, issue.projectId),
       parentLinearId: resolve(issueMap, issue.parentId),
       labelLinearIds: [
+        // Unresolvable label ids are tagged, not dropped — a dangling label
+        // must change the set (vs Linear's) rather than silently vanish.
         ...new Set(
-          (issue.labelIds ?? []).map((id) => labelMap.get(id)).filter(Boolean) as string[],
+          (issue.labelIds ?? []).map((id) => labelMap.get(id) ?? `${UNRESOLVED_PREFIX}${id}`),
         ),
       ].sort(),
       archived: issue.archivedAt !== null && issue.archivedAt !== undefined,

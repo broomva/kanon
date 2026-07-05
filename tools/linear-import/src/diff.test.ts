@@ -6,6 +6,7 @@ import {
   type NormIssue,
   normalizeKanonIssues,
   normalizeLinearIssue,
+  UNRESOLVED_PREFIX,
 } from "./diff";
 import type { LinearIssueExport } from "./types";
 
@@ -189,7 +190,7 @@ describe("normalizeKanonIssues", () => {
     expect(issues.map((i) => i.linearId)).toEqual(["L1"]);
   });
 
-  test("an unresolvable reference normalizes to empty (surfaces as drift, not a crash)", () => {
+  test("an unresolvable reference is TAGGED, not collapsed to empty", () => {
     const { issues } = normalizeKanonIssues(catalog, [
       kIssue({
         id: "iss-1",
@@ -198,7 +199,31 @@ describe("normalizeKanonIssues", () => {
         labelIds: ["gone"],
       }),
     ]);
-    expect(issues[0]?.stateLinearId).toBe("");
-    expect(issues[0]?.labelLinearIds).toEqual([]);
+    expect(issues[0]?.stateLinearId).toBe(`${UNRESOLVED_PREFIX}unknown-ulid`);
+    expect(issues[0]?.labelLinearIds).toEqual([`${UNRESOLVED_PREFIX}gone`]);
+  });
+
+  test("a dangling Kanon ref does NOT false-match a legitimately-empty Linear side", () => {
+    // Kanon points at a since-tombstoned assignee (resolves to a sentinel);
+    // Linear has the issue genuinely unassigned (""). This MUST be drift.
+    const kanon = normalizeKanonIssues(catalog, [
+      kIssue({ id: "iss-1", data: { linearId: "L1" }, assigneeId: "tombstoned-ulid" }),
+    ]).issues;
+    const linear = [
+      normalizeLinearIssue({
+        linearId: "L1",
+        teamLinearId: "T1",
+        number: 1,
+        identifier: "BRO-1",
+        title: "T",
+        labelLinearIds: [],
+        createdAt: "2026-07-01T00:00:00Z",
+        updatedAt: "2026-07-01T00:00:00Z",
+        relations: [],
+      }),
+    ];
+    const report = diffIssues(linear, kanon);
+    expect(report.converged).toBe(false);
+    expect(report.mismatches[0]?.fields[0]?.field).toBe("assigneeLinearId");
   });
 });

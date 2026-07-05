@@ -13,6 +13,7 @@
  * Exit: 0 converged · 1 diverged (onlyInLinear or hard mismatches) · 2 error.
  */
 
+import { appendFileSync } from "node:fs";
 import {
   type DiffReport,
   diffIssues,
@@ -97,89 +98,97 @@ if (kanonKey === undefined || kanonKey.length === 0) {
 const samples = Number(flags.get("samples") ?? 20);
 if (!Number.isInteger(samples) || samples < 0) fail("--samples must be a non-negative integer");
 
-// Linear (source of truth) — throws a clear error if LINEAR_API_KEY is unset.
-const linearExport = await fetchLinearExport();
-const linear = linearExport.issues.map(normalizeLinearIssue);
-
-// Kanon shadow (the mirror) — its own REST read path, exactly what agents see.
-const catalog = (await fetchJson(`${server}/v1/catalog`, kanonKey)) as Partial<KanonCatalog>;
-const issuesBody = (await fetchJson(`${server}/v1/issues`, kanonKey)) as { issues?: unknown };
-const { issues: kanon, native } = normalizeKanonIssues(
-  {
-    states: asArray(catalog.states) as KanonCatalog["states"],
-    projects: asArray(catalog.projects) as KanonCatalog["projects"],
-    labels: asArray(catalog.labels) as KanonCatalog["labels"],
-    actors: asArray(catalog.actors) as KanonCatalog["actors"],
-  },
-  asArray(issuesBody.issues) as KanonIssue[],
-);
-
-const report = diffIssues(linear, kanon, native);
-const ts = new Date().toISOString();
-
-// -- output ----------------------------------------------------------------
 function cap<T>(items: T[]): T[] {
   return items.slice(0, samples);
 }
 
-const summary = {
-  ts,
-  converged: report.converged,
-  linearCount: report.linearCount,
-  kanonCount: report.kanonCount,
-  kanonNative: report.kanonNative,
-  matched: report.matched,
-  counts: {
-    mismatches: report.mismatches.length,
-    descriptionOnly: report.descriptionOnly.length,
-    onlyInLinear: report.onlyInLinear.length,
-    onlyInKanon: report.onlyInKanon.length,
-  },
-  samples: {
-    mismatches: cap(report.mismatches),
-    onlyInLinear: cap(report.onlyInLinear),
-    onlyInKanon: cap(report.onlyInKanon),
-    descriptionOnly: cap(report.descriptionOnly),
-  },
-};
+// Everything from here is wrapped so ANY failure — a thrown Linear pull, a
+// Kanon fetch, a receipt-write error — exits 2 (error), never 1. That keeps the
+// exit-code contract exact (0 converged · 1 diverged · 2 error), which the
+// systemd unit's SuccessExitStatus=0 1 relies on: exit 1 must mean ONLY
+// "diverged" (a recorded finding), so a broken run can never masquerade as a
+// green soak. `process.exit` inside the try terminates before the catch.
+try {
+  // Linear (source of truth). fetch.ts throws on missing key or a paginated pull failure.
+  const linearExport = await fetchLinearExport();
+  const linear = linearExport.issues.map(normalizeLinearIssue);
 
-// Human summary → stderr (journald + terminal), never contaminates --json stdout.
-const verdict = report.converged ? "CONVERGED" : "DIVERGED";
-console.error(
-  `mirror-diff: ${verdict} — linear ${report.linearCount} · kanon ${report.kanonCount} ` +
-    `(+${report.kanonNative} native) · matched ${report.matched}`,
-);
-console.error(
-  `  drift: ${report.mismatches.length} field-mismatch · ${report.onlyInLinear.length} missing-from-shadow` +
-    ` · soft: ${report.descriptionOnly.length} description-only · ${report.onlyInKanon.length} deleted-in-linear`,
-);
-for (const m of cap(report.mismatches)) {
-  console.error(`  ✗ ${m.identifier}: ${m.fields.map((f) => f.field).join(", ")}`);
-}
-for (const o of cap(report.onlyInLinear)) {
-  console.error(`  ✗ missing from shadow: ${o.identifier}`);
-}
+  // Kanon shadow (the mirror) — its own REST read path, exactly what agents see.
+  const catalog = (await fetchJson(`${server}/v1/catalog`, kanonKey)) as Partial<KanonCatalog>;
+  const issuesBody = (await fetchJson(`${server}/v1/issues`, kanonKey)) as { issues?: unknown };
+  const { issues: kanon, native } = normalizeKanonIssues(
+    {
+      states: asArray(catalog.states) as KanonCatalog["states"],
+      projects: asArray(catalog.projects) as KanonCatalog["projects"],
+      labels: asArray(catalog.labels) as KanonCatalog["labels"],
+      actors: asArray(catalog.actors) as KanonCatalog["actors"],
+    },
+    asArray(issuesBody.issues) as KanonIssue[],
+  );
 
-if (typeof flags.get("save-report") === "string") {
-  const full: DiffReport & { ts: string } = { ts, ...report };
-  await Bun.write(flags.get("save-report") as string, `${JSON.stringify(full, null, 2)}\n`);
-}
-if (typeof flags.get("receipt") === "string") {
-  const line = JSON.stringify({
+  const report = diffIssues(linear, kanon, native);
+  const ts = new Date().toISOString();
+
+  const summary = {
     ts,
     converged: report.converged,
     linearCount: report.linearCount,
     kanonCount: report.kanonCount,
     kanonNative: report.kanonNative,
     matched: report.matched,
-    ...summary.counts,
-  });
-  const path = flags.get("receipt") as string;
-  const prev = (await Bun.file(path).exists()) ? await Bun.file(path).text() : "";
-  await Bun.write(path, `${prev}${line}\n`);
-}
-if (flags.get("json") === true) {
-  console.log(JSON.stringify(summary, null, 2));
-}
+    counts: {
+      mismatches: report.mismatches.length,
+      descriptionOnly: report.descriptionOnly.length,
+      onlyInLinear: report.onlyInLinear.length,
+      onlyInKanon: report.onlyInKanon.length,
+    },
+    samples: {
+      mismatches: cap(report.mismatches),
+      onlyInLinear: cap(report.onlyInLinear),
+      onlyInKanon: cap(report.onlyInKanon),
+      descriptionOnly: cap(report.descriptionOnly),
+    },
+  };
 
-process.exit(report.converged ? 0 : 1);
+  // Human summary → stderr (journald + terminal), never contaminates --json stdout.
+  const verdict = report.converged ? "CONVERGED" : "DIVERGED";
+  console.error(
+    `mirror-diff: ${verdict} — linear ${report.linearCount} · kanon ${report.kanonCount} ` +
+      `(+${report.kanonNative} native) · matched ${report.matched}`,
+  );
+  console.error(
+    `  drift: ${report.mismatches.length} field-mismatch · ${report.onlyInLinear.length} missing-from-shadow` +
+      ` · soft: ${report.descriptionOnly.length} description-only · ${report.onlyInKanon.length} only-in-shadow`,
+  );
+  for (const m of cap(report.mismatches)) {
+    console.error(`  ✗ ${m.identifier}: ${m.fields.map((f) => f.field).join(", ")}`);
+  }
+  for (const o of cap(report.onlyInLinear)) {
+    console.error(`  ✗ missing from shadow: ${o.identifier}`);
+  }
+
+  if (typeof flags.get("save-report") === "string") {
+    const full: DiffReport & { ts: string } = { ts, ...report };
+    await Bun.write(flags.get("save-report") as string, `${JSON.stringify(full, null, 2)}\n`);
+  }
+  if (typeof flags.get("receipt") === "string") {
+    const line = JSON.stringify({
+      ts,
+      converged: report.converged,
+      linearCount: report.linearCount,
+      kanonCount: report.kanonCount,
+      kanonNative: report.kanonNative,
+      matched: report.matched,
+      ...summary.counts,
+    });
+    // True append — never read-modify-write the whole receipt log.
+    appendFileSync(flags.get("receipt") as string, `${line}\n`);
+  }
+  if (flags.get("json") === true) {
+    console.log(JSON.stringify(summary, null, 2));
+  }
+
+  process.exit(report.converged ? 0 : 1);
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}

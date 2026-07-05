@@ -108,9 +108,23 @@ tools/linear-import/deploy/install-diff.sh          # installs + enables the tim
 
 **Convergence gate:** `converged = onlyInLinear == 0 && field-mismatches == 0`.
 Known-limit divergences are **reported, not hard-failed** — a description-only
-diff (soft) and `onlyInKanon` (an issue deleted in Linear the importer can't
-propagate) show in the report but don't flip `converged`. Nothing is written to
-either system. Soak is green when 48h of receipts all read `converged: true`.
+diff (soft) and `onlyInKanon` (an issue deleted in Linear, or absent from the
+pull) show in the report but don't flip `converged`. Nothing is written to
+either system.
+
+**Reading the soak (not "every receipt must be green").** The diff and the
+refresh run on independent timers, so a single non-converged receipt is
+*expected* during active work: an issue edited in Linear is drift until the
+next refresh (≤30 min) catches it, and a mid-flight edit during the multi-minute
+Linear pull shows as drift for one run. Such transients **self-heal on the next
+diff**. The soak is green when, over the 48h window:
+
+1. the **receipt count matches the expected run count** (≈8 at 6h cadence, plus
+   catch-ups) — a *missing* receipt means a run errored (exit 2), not that it
+   converged, so a short count fails the gate; **and**
+2. no drift **persists across ≥2 consecutive diffs** (i.e. survives a refresh
+   cycle). A mismatch on the same issue in back-to-back receipts is real
+   divergence and blocks the cutover; an isolated one-run blip is refresh lag.
 
 ## Package layout
 
